@@ -74,6 +74,7 @@ using namespace sensesp;
 // ════════════════════════════════════════════════════════════
 //  HARDWARE Includes
 // ════════════════════════════════════════════════════════════
+#include "secrets.h"
 #include <Arduino.h>
 #include <Wire.h>
 #include <WiFi.h>
@@ -90,7 +91,6 @@ using namespace sensesp;
 // ════════════════════════════════════════════════════════════
 
 #define AP_SSID          "AchternSensorik"
-#define AP_PASS          "REDACTED-AP-PW"
 #define DEVICE_HOSTNAME  "AchternSensorik"
 #define OTA_PASSWORD     "REDACTED-OTA-PW"
 
@@ -220,6 +220,38 @@ const unsigned long TransmitMessages[] PROGMEM = {
 // SensESP 3.x: sensesp_app wird von get_app() gesetzt (kein eigenes ReactESP nötig)
 
 // ════════════════════════════════════════════════════════════
+//  DREHRICHTUNGS-KONFIG (Vorwaerts/Rueckwaerts vertauschen)
+//  Vor dem Algorithmus definiert, da calcRPMandDirection() es nutzt.
+// ════════════════════════════════════════════════════════════
+
+class DirConfig : public FileSystemSaveable {
+ public:
+  bool invert = false;   // true = CW/CCW (Vorwaerts/Rueckwaerts) vertauschen
+
+  DirConfig() : FileSystemSaveable("/dir/config") { load(); }
+
+  bool to_json(JsonObject& root) override {
+    root["invert"] = invert;
+    return true;
+  }
+
+  bool from_json(const JsonObject& cfg) override {
+    if (cfg["invert"].is<bool>())
+      invert = cfg["invert"].as<bool>();
+    return true;
+  }
+};
+
+inline const String ConfigSchema(const DirConfig&) {
+  return R"###({"type":"object","properties":{
+    "invert":{"title":"Richtung umdrehen","type":"boolean",
+      "description":"Vertauscht Vorwaerts/Rueckwaerts (CW/CCW) der Wellendrehrichtung, falls der Hallsensor andersherum eingebaut ist."}
+  }})###";
+}
+
+static std::shared_ptr<DirConfig> g_dir_cfg;
+
+// ════════════════════════════════════════════════════════════
 //  DREHRICHTUNGS- & RPM-ALGORITHMUS
 // ════════════════════════════════════════════════════════════
 
@@ -268,6 +300,9 @@ void calcRPMandDirection() {
   if      (isCW)  { sd.direction = +1; sd.shaftValid = true; }
   else if (isCCW) { sd.direction = -1; sd.shaftValid = true; }
   else            { sd.shaftValid = true; }  // Richtung Hysterese
+
+  // Optional: Vorwaerts/Rueckwaerts vertauschen (Web-UI Flag "Richtung umdrehen").
+  if (g_dir_cfg && g_dir_cfg->invert) sd.direction = -sd.direction;
 }
 
 // ════════════════════════════════════════════════════════════
@@ -1182,11 +1217,64 @@ void setup() {
     });
   }
 
+  // ── Drehrichtungs-Konfiguration (Vorwaerts/Rueckwaerts) ──
+  g_dir_cfg = std::make_shared<DirConfig>();
+  ConfigItem(g_dir_cfg)
+    ->set_title("Wellendrehrichtung")
+    ->set_description(
+      "Vorwaerts/Rueckwaerts (CW/CCW) der Drehrichtungserkennung vertauschen, "
+      "falls der Hallsensor andersherum eingebaut ist.")
+    ->set_sort_order(210);
+
   // ── Device-Status Items: Canbus + Dashboard-Link ─────────
   g_st_can_state = new StatusPageItem<String>  ("Status",     "unbekannt", "Canbus", 100);
   g_st_can_tx    = new StatusPageItem<uint32_t>("TX Pakete",  0,           "Canbus", 110);
   g_st_can_err   = new StatusPageItem<uint32_t>("TX Fehler",  0,           "Canbus", 120);
   g_st_can_rx    = new StatusPageItem<uint32_t>("RX Pakete",  0,           "Canbus", 130);
+
+  // ── Sensor-Werte auf der Status-Seite (Gruppe "Sensoren") ──
+  auto* st_rpm    = new StatusPageItem<String>("Drehzahl",  "--", "Sensoren", 10);
+  auto* st_dir    = new StatusPageItem<String>("Richtung",  "--", "Sensoren", 20);
+  auto* st_rudder = new StatusPageItem<String>("Ruder",     "--", "Sensoren", 30);
+  auto* st_oil    = new StatusPageItem<String>("Oeldruck",  "--", "Sensoren", 40);
+  auto* st_t0     = new StatusPageItem<String>(g_temp_cfg->names[0], "--", "Sensoren", 50);
+  auto* st_t1     = new StatusPageItem<String>(g_temp_cfg->names[1], "--", "Sensoren", 55);
+  auto* st_t2     = new StatusPageItem<String>(g_temp_cfg->names[2], "--", "Sensoren", 60);
+  auto* st_t3     = new StatusPageItem<String>(g_temp_cfg->names[3], "--", "Sensoren", 65);
+  auto* st_air    = new StatusPageItem<String>("Lufttemperatur", "--", "Sensoren", 70);
+  auto* st_hum    = new StatusPageItem<String>("Luftfeuchte",    "--", "Sensoren", 75);
+  auto* st_pres   = new StatusPageItem<String>("Luftdruck",      "--", "Sensoren", 80);
+  auto* st_gas    = new StatusPageItem<String>("Gas-Widerstand", "--", "Sensoren", 85);
+
+  event_loop()->onRepeat(1000, [st_rpm, st_dir, st_rudder, st_oil, st_t0, st_t1,
+                                st_t2, st_t3, st_air, st_hum, st_pres, st_gas]() {
+    char v[28];
+    snprintf(v, sizeof(v), "%.0f RPM", sd.rpm);
+    st_rpm->set(v);
+    st_dir->set(sd.direction > 0 ? "Vorwärts"
+              : sd.direction < 0 ? "Rückwärts" : "Stillstand");
+    snprintf(v, sizeof(v), "%+.1f °", sd.rudderAngle);
+    st_rudder->set(v);
+    snprintf(v, sizeof(v), "%.2f bar", sd.oilPressure / 100000.0f);
+    st_oil->set(v);
+    StatusPageItem<String>* ts[4] = {st_t0, st_t1, st_t2, st_t3};
+    for (int i = 0; i < 4; i++) {
+      if (isnan(sd.temp[i])) {
+        ts[i]->set("--");
+      } else {
+        snprintf(v, sizeof(v), "%.1f °C", sd.temp[i]);
+        ts[i]->set(v);
+      }
+    }
+    if (isnan(sd.airTemp)) st_air->set("--");
+    else { snprintf(v, sizeof(v), "%.1f °C", sd.airTemp); st_air->set(v); }
+    if (isnan(sd.humidity)) st_hum->set("--");
+    else { snprintf(v, sizeof(v), "%.0f %%", sd.humidity); st_hum->set(v); }
+    if (isnan(sd.pressure)) st_pres->set("--");
+    else { snprintf(v, sizeof(v), "%.0f hPa", sd.pressure); st_pres->set(v); }
+    if (isnan(sd.gasRes)) st_gas->set("--");
+    else { snprintf(v, sizeof(v), "%.0f kOhm", sd.gasRes); st_gas->set(v); }
+  });
 
   // ── OTA Passwort (SensESP-Wrapper) ───────────────────────
   new OTA(OTA_PASSWORD);
