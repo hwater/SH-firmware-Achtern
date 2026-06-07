@@ -7,6 +7,8 @@
 .claude/scheduled_tasks.lock
 .DS_Store
 can64.txt
+# Geheimnisse (WiFi/OTA/SignalK) – niemals committen; secrets.h.example bleibt versioniert
+src/secrets.h
 # Akzidentielle curl-Output-Artefakte aus Diagnose-Sessions
 /api
 /can
