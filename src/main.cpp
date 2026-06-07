@@ -30,7 +30,7 @@
  *    environment.inside.engineRoom.temperature [K]  ← DS18B20 T2
  *
  *  WiFi AP (SensESP Konfig-Portal):
- *    SSID: AchternSensorik   Pass: REDACTED-AP-PW
+ *    SSID: AchternSensorik   Pass: siehe secrets.h
  *    IP:   192.168.4.1
  *    Konfigurationsseite:  http://192.168.4.1
  *    Echtzeit-Dashboard:   http://192.168.4.1/dash
@@ -38,7 +38,7 @@
  *
  *  OTA:
  *    Hostname:   AchternSensorik
- *    Passwort:   REDACTED-OTA-PW
+ *    Passwort:   siehe secrets.h
  *    Upload:     pio run -t upload --upload-port AchternSensorik.local
  *
  *  Messprinzip Drehrichtung (Abstände 44 / 77 / 220 mm → Verhältnis 1.00 : 1.75 : 5.00):
@@ -92,7 +92,7 @@ using namespace sensesp;
 
 #define AP_SSID          "AchternSensorik"
 #define DEVICE_HOSTNAME  "AchternSensorik"
-#define OTA_PASSWORD     "REDACTED-OTA-PW"
+// OTA_PASSWORD wird aus secrets.h geladen (gitignored, nicht im Repo).
 
 // ── GPIO ─────────────────────────────────────────────────
 #define ENGINE_RPM_PIN   27
