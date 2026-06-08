@@ -200,6 +200,8 @@ uint32_t canErrPkts = 0;
 uint32_t canRxPkts  = 0;
 uint32_t canRecoveries = 0;
 uint32_t canLastRecoveryMs = 0;
+uint32_t canTxErr = 0;   // SJA1000 TX error counter, cached from the event loop
+uint32_t canRxErr = 0;   // SJA1000 RX error counter, cached from the event loop
 
 // ── NMEA2000 ─────────────────────────────────────────────
 tNMEA2000* nmea2000;
@@ -210,6 +212,8 @@ static StatusPageItem<String>*   g_st_can_state = nullptr;
 static StatusPageItem<uint32_t>* g_st_can_tx    = nullptr;
 static StatusPageItem<uint32_t>* g_st_can_err   = nullptr;
 static StatusPageItem<uint32_t>* g_st_can_rx    = nullptr;
+static StatusPageItem<uint32_t>* g_st_can_rxerr = nullptr;
+static StatusPageItem<uint32_t>* g_st_can_recov = nullptr;
 static StatusPageItem<uint8_t>*  g_st_n2k_addr  = nullptr;
 
 // ── NMEA2000 PGN-Liste ───────────────────────────────────
@@ -512,9 +516,16 @@ void sendNMEA2000() {
 
   canBusOk = cycleOk;
 
+  // Cache the SJA1000 TX/RX error counters here (event-loop task) so the HTTP
+  // handler can read them without concurrent CAN-peripheral access.
+  canTxErr = MODULE_CAN->TXERR.B.TXERR;
+  canRxErr = MODULE_CAN->RXERR.B.RXERR;
+
   if (g_st_can_state) g_st_can_state->set(canBusOk ? "OK (online)" : "Fehler");
   if (g_st_can_tx)    g_st_can_tx->set(canTxPkts);
-  if (g_st_can_err)   g_st_can_err->set(canErrPkts);
+  if (g_st_can_err)   g_st_can_err->set(canTxErr);
+  if (g_st_can_rxerr) g_st_can_rxerr->set(canRxErr);
+  if (g_st_can_recov) g_st_can_recov->set(canRecoveries);
 }
 
 // ════════════════════════════════════════════════════════════
@@ -655,7 +666,8 @@ String buildJsonData() {
     "\"t0_name\":\"%s\",\"t1_name\":\"%s\",\"t2_name\":\"%s\",\"t3_name\":\"%s\","
     "\"air_temp\":%.2f,\"humidity\":%.1f,\"pressure_hpa\":%.1f,"
     "\"gas_kohm\":%.1f,\"uptime_s\":%lu,\"sk_ready\":true,"
-    "\"can_ok\":%s,\"can_tx\":%lu,\"can_err\":%lu,\"can_rx\":%lu}",
+    "\"can_ok\":%s,\"can_tx\":%lu,\"can_err\":%lu,\"can_rx\":%lu,"
+    "\"can_txerr\":%lu,\"can_rxerr\":%lu,\"can_recoveries\":%lu,\"ip\":\"%s\",\"wifi\":%s}",
     hn.c_str(),
     sd.rpm, dStr, sd.direction,
     sd.shaftValid?"true":"false",
@@ -668,7 +680,11 @@ String buildJsonData() {
     isnan(sd.pressure)?0.0f:sd.pressure,
     isnan(sd.gasRes)  ?0.0f:sd.gasRes,
     millis()/1000UL,
-    canBusOk?"true":"false", canTxPkts, canErrPkts, canRxPkts
+    canBusOk?"true":"false", canTxPkts, canErrPkts, canRxPkts,
+    (unsigned long)canTxErr, (unsigned long)canRxErr,
+    (unsigned long)canRecoveries,
+    WiFi.localIP().toString().c_str(),
+    (WiFi.status() == WL_CONNECTED) ? "true" : "false"
   );
   return String(buf);
 }
@@ -829,173 +845,93 @@ static void registerCustomRoutes() {
 
 // HTML im Flash (PROGMEM) – spart Heap
 const char DASH_HTML[] PROGMEM = R"rawhtml(<!DOCTYPE html>
-<html lang="de">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>AchternSensorik</title>
-<style>
-:root{--bg:#0d1b2a;--card:#16213e;--acc:#00ff7f;--w:#fa0;--b:#f44;--t:#e0e0e0}
-*{box-sizing:border-box;margin:0;padding:0}
-body{background:var(--bg);color:var(--t);font-family:monospace;padding:10px}
-.brand{position:absolute;top:8px;left:10px;color:var(--acc);
-  text-decoration:none;font-size:1rem;font-weight:600;letter-spacing:.04em;z-index:5}
-.brand:hover{filter:brightness(1.25)}
-h1{text-align:center;color:var(--acc);font-size:1.15rem;margin-bottom:10px}
-.g{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:8px}
-.c{background:var(--card);border-radius:8px;padding:10px;text-align:center}
-.l{font-size:.62rem;color:#777;text-transform:uppercase;margin-bottom:3px}
-.v{font-size:1.4rem;font-weight:700;color:var(--acc)}
+<html lang="de"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AchternSensorik</title><style>
+:root{--bg:#0b1620;--card:#13202c;--fg:#e7eef5;--mut:#7f97a8;--acc:#00ff7f;--w:#fa0;--b:#f44}
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,Arial,sans-serif;background:var(--bg);color:var(--fg)}
+header{padding:14px 18px;background:#0e1c28;display:flex;justify-content:space-between;align-items:center}
+header h1{font-size:18px;margin:0;letter-spacing:.04em}#conn{font-size:13px;color:var(--mut)}
+.brand{display:flex;align-items:center;gap:12px}
+.seslogo{display:inline-flex;align-items:center;transition:opacity .15s}
+.seslogo img{height:30px;width:auto;display:block}
+.seslogo:hover{opacity:.75}
+.grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));padding:14px}
+.card{background:var(--card);border-radius:10px;padding:14px 16px}
+.card h2{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);margin:0 0 10px}
+.row{display:flex;justify-content:space-between;align-items:baseline;padding:4px 0}
+.row .l{color:var(--mut);font-size:14px}
+.row .v{font-variant-numeric:tabular-nums;font-weight:600;color:var(--acc)}
 .v.w{color:var(--w)}.v.b{color:var(--b)}
-.u{font-size:.7rem;color:#aaa}
-.sep{grid-column:1/-1;border-top:1px solid #1e2d45}
-.sh{grid-column:1/-1;font-size:.58rem;color:#3a6a50;text-transform:uppercase;letter-spacing:.14em;padding-top:4px}
-.c2{grid-column:span 2}
-.rsvg{width:100%;max-width:230px;display:block;margin:6px auto 0}
-#st{font-size:.6rem;color:#555;text-align:right;margin-bottom:6px}
-footer{text-align:center;font-size:.6rem;color:#444;margin-top:12px}
-.badge{display:inline-block;padding:2px 6px;border-radius:4px;
-       font-size:.6rem;background:#0af2;color:#0af;margin:2px}
-</style>
-</head>
-<body>
-<a href="/dash" class="brand" title="Dashboard">⚓</a>
-<h1 id="hn">AchternSensorik</h1>
-<div id="st">Verbindung wird aufgebaut...</div>
-<div class="g">
-  <div class="sh">Motor &amp; Steuerung</div>
-  <div class="c"><div class="l">Wellendrehzahl</div>
-    <span class="v" id="rpm">--</span><span class="u"> RPM</span></div>
-  <div class="c"><div class="l">Drehrichtung</div>
-    <span class="v" id="dir" style="font-size:2rem">⏸</span><br>
-    <span class="u" id="dirt">--</span></div>
-  <div class="c"><div class="l">Öldruck</div>
-    <span class="v" id="oil">--</span><span class="u"> bar</span></div>
-  <div class="c c2"><div class="l">Ruderwinkel</div>
-    <span class="v" id="rud">--</span><span class="u"> °</span>
-    <svg viewBox="0 0 230 64" class="rsvg" aria-hidden="true">
-      <!-- track -->
-      <line x1="15" y1="40" x2="215" y2="40" stroke="#1e2d45" stroke-width="2" stroke-linecap="round"/>
-      <!-- center tick -->
-      <line x1="115" y1="30" x2="115" y2="50" stroke="#888" stroke-width="1"/>
-      <!-- side ticks -->
-      <line x1="15"  y1="34" x2="15"  y2="46" stroke="#666"/>
-      <line x1="215" y1="34" x2="215" y2="46" stroke="#666"/>
-      <!-- labels -->
-      <text x="15"  y="60" font-size="9" fill="#f44" text-anchor="middle">BB 35°</text>
-      <text x="115" y="60" font-size="9" fill="#888" text-anchor="middle">0</text>
-      <text x="215" y="60" font-size="9" fill="#0f6" text-anchor="middle">STB 35°</text>
-      <!-- needle (will be moved by JS) -->
-      <line id="rudNd" x1="115" y1="22" x2="115" y2="58" stroke="#00ff7f" stroke-width="3" stroke-linecap="round"/>
-      <circle id="rudDot" cx="115" cy="40" r="5" fill="#00ff7f"/>
-    </svg>
-  </div>
-  <div class="sep"></div>
-  <div class="sh">Motortemperaturen</div>
-  <div class="c"><div class="l" id="t0_lbl">T0</div>
-    <span class="v" id="t0">--</span><span class="u"> °C</span></div>
-  <div class="c"><div class="l" id="t1_lbl">T1</div>
-    <span class="v" id="t1">--</span><span class="u"> °C</span></div>
-  <div class="c"><div class="l" id="t2_lbl">T2</div>
-    <span class="v" id="t2">--</span><span class="u"> °C</span></div>
-  <div class="c"><div class="l" id="t3_lbl">T3</div>
-    <span class="v" id="t3">--</span><span class="u"> °C</span></div>
-  <div class="sep"></div>
-  <div class="sh">Umgebung</div>
-  <div class="c"><div class="l">Lufttemperatur</div>
-    <span class="v" id="at">--</span><span class="u"> °C</span></div>
-  <div class="c"><div class="l">Luftfeuchte</div>
-    <span class="v" id="hum">--</span><span class="u"> %</span></div>
-  <div class="c"><div class="l">Luftdruck</div>
-    <span class="v" id="pres">--</span><span class="u"> hPa</span></div>
-  <div class="c"><div class="l">Gas-Widerstand</div>
-    <span class="v" id="gas">--</span><span class="u"> kΩ</span></div>
-  <div class="sep"></div>
-  <div class="sh">Device Status &nbsp;/&nbsp; Canbus</div>
-  <div class="c"><div class="l">Status</div>
-    <span class="v" id="cbSt" style="font-size:2rem">--</span><br>
-    <span class="u" id="cbStTxt">--</span></div>
-  <div class="c"><div class="l">TX Pakete</div>
-    <span class="v" id="cbTx">--</span></div>
-  <div class="c"><div class="l">TX Fehler</div>
-    <span class="v" id="cbErr">--</span></div>
-  <div class="c"><div class="l">RX Pakete</div>
-    <span class="v" id="cbRx">--</span></div>
+.plain .v{color:var(--fg)}
+.big{font-size:34px;font-weight:700;color:var(--acc)}.unit{font-size:14px;color:var(--mut);font-weight:400;margin-left:4px}
+</style></head><body>
+<header><div class="brand"><a class="seslogo" href="/" title="SensESP Konfiguration"><img src="/SensESP_logo_symbol.svg" alt="SensESP"></a><h1 id="hn">AchternSensorik</h1></div><span id="conn">verbinde…</span></header>
+<div class="grid">
+<div class="card"><h2>Welle</h2>
+<div class="big"><span id="rpm">--</span><span class="unit">U/min</span></div>
+<div class="row"><span class="l">Drehrichtung</span><span class="v" id="dir">--</span></div></div>
+<div class="card"><h2>Motor &amp; Ruder</h2>
+<div class="row"><span class="l">Öldruck</span><span class="v" id="oil">--</span></div>
+<div class="row"><span class="l">Ruderwinkel</span><span class="v" id="rud">--</span></div></div>
+<div class="card"><h2>Temperaturen</h2>
+<div class="row"><span class="l" id="t0l">T0</span><span class="v" id="t0">--</span></div>
+<div class="row"><span class="l" id="t1l">T1</span><span class="v" id="t1">--</span></div>
+<div class="row"><span class="l" id="t2l">T2</span><span class="v" id="t2">--</span></div>
+<div class="row"><span class="l" id="t3l">T3</span><span class="v" id="t3">--</span></div></div>
+<div class="card"><h2>Umgebung</h2>
+<div class="row"><span class="l">Lufttemperatur</span><span class="v" id="at">--</span></div>
+<div class="row"><span class="l">Luftfeuchte</span><span class="v" id="hum">--</span></div>
+<div class="row"><span class="l">Luftdruck</span><span class="v" id="pres">--</span></div>
+<div class="row"><span class="l">Gas-Widerstand</span><span class="v" id="gas">--</span></div></div>
+<div class="card plain"><h2>NMEA 2000</h2>
+<div class="row"><span class="l">Status</span><span class="v" id="cbst">--</span></div>
+<div class="row"><span class="l">TX / RX Pakete</span><span class="v"><span id="cbtx">--</span> / <span id="cbrx">--</span></span></div>
+<div class="row"><span class="l">TX / RX Fehler</span><span class="v"><span id="cbte">--</span> / <span id="cbre">--</span></span></div>
+<div class="row"><span class="l">Recoveries</span><span class="v" id="cbrec">--</span></div></div>
+<div class="card plain"><h2>System</h2>
+<div class="row"><span class="l">Hostname</span><span class="v" id="host">--</span></div>
+<div class="row"><span class="l">IP</span><span class="v" id="ip">--</span></div>
+<div class="row"><span class="l">WLAN</span><span class="v" id="wifi">--</span></div>
+<div class="row"><span class="l">Laufzeit</span><span class="v" id="up">--</span></div></div>
 </div>
-<div style="text-align:center;margin-top:10px">
-  <span class="badge">Signal K bereit</span>
-  <span class="badge">NMEA2000 aktiv</span>
-  <span class="badge">SensESP</span>
-</div>
-<div style="text-align:center;margin-top:14px">
-  <button id="btnRst" style="background:#c33;color:#fff;border:0;border-radius:6px;
-    padding:10px 22px;font-size:1rem;font-weight:600;cursor:pointer">
-    Neustart
-  </button>
-</div>
-<footer>
-  <a href="/status" style="color:#0af">⚙ Status</a> &nbsp;·&nbsp;
-  <a href="/api/data" style="color:#0af">{ } JSON</a> &nbsp;·&nbsp;
-  <span id="ftn">AchternSensorik</span> v2.0
-</footer>
 <script>
-function sv(id,v,cls){var e=document.getElementById(id);if(!e)return;
-  e.textContent=v;e.className='v'+(cls?' '+cls:'');}
-function up(){
-  fetch('/api/data').then(r=>r.json()).then(d=>{
-    if(d.hostname){
-      document.title=d.hostname;
-      var hn=document.getElementById('hn'); if(hn) hn.textContent=d.hostname;
-      var ftn=document.getElementById('ftn'); if(ftn) ftn.textContent=d.hostname;
-    }
-    sv('rpm',d.rpm.toFixed(0));
-    sv('dir',d.dirNum>0?'↻':d.dirNum<0?'↺':'⏸');
-    document.getElementById('dirt').textContent=
-      d.dirNum>0?'Vorwärts CW':d.dirNum<0?'Rückwärts CCW':'Stillstand';
-    sv('rud',d.rudder_deg.toFixed(1));
-    var rdeg=Math.max(-35,Math.min(35,d.rudder_deg||0));
-    var px=115+(rdeg/35)*100;
-    var col=Math.abs(rdeg)<5?'#00ff7f':(rdeg<0?'#f44':'#0f6');
-    var nd=document.getElementById('rudNd');
-    var dt=document.getElementById('rudDot');
-    if(nd){nd.setAttribute('x1',px);nd.setAttribute('x2',px);nd.setAttribute('stroke',col);}
-    if(dt){dt.setAttribute('cx',px);dt.setAttribute('fill',col);}
-    sv('oil',d.oil_bar.toFixed(2),d.oil_bar<0.5?'w':'');
-    ['t0','t1','t2','t3'].forEach(function(id,i){
-      var v=d['temp'+i];
-      sv(id,v===null?'N/A':v.toFixed(1),v!==null&&v>95?'b':'');
-      var lbl=document.getElementById(id+'_lbl');
-      if(lbl) lbl.textContent=(d[id+'_name']||('T'+i));
-    });
-    sv('at',d.air_temp.toFixed(1));
-    sv('hum',d.humidity.toFixed(0));
-    sv('pres',d.pressure_hpa.toFixed(0));
-    sv('gas',d.gas_kohm.toFixed(0));
-    document.getElementById('st').textContent=
-      'Aktualisiert: '+new Date().toLocaleTimeString()+
-      ' · Laufzeit: '+Math.floor(d.uptime_s/3600)+'h '+
-      Math.floor((d.uptime_s%3600)/60)+'m';
-    var cbSt=document.getElementById('cbSt');
-    if(cbSt){
-      cbSt.textContent=d.can_ok?'●':'○';
-      cbSt.style.color=d.can_ok?'#00ff7f':'#f44336';
-      document.getElementById('cbStTxt').textContent=d.can_ok?'Online':'Fehler';
-    }
-    sv('cbTx',d.can_tx);
-    sv('cbErr',d.can_err,d.can_err>0?'b':'');
-    sv('cbRx',d.can_rx);
-  }).catch(function(){
-    document.getElementById('st').textContent='⚠ Verbindungsfehler';
-  });
-}
-up();setInterval(up,1000);
-document.getElementById('btnRst').onclick=function(){
-  if(!confirm('Geraet wirklich neu starten?'))return;
-  fetch('/api/restart',{method:'POST'}).then(function(){
-    document.getElementById('st').textContent='Neustart...';
-    setTimeout(function(){location.reload();},6000);
-  }).catch(function(){alert('Restart fehlgeschlagen');});
-};
+var $=function(i){return document.getElementById(i)};
+function f(v,d){return (v==null)?'--':(typeof v==='number'?v.toFixed(d):v)}
+function upt(s){if(s==null)return'--';var d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return (d?d+'d ':'')+h+'h '+m+'m'}
+function cls(id,c){var e=$(id);if(e)e.className='v'+(c?' '+c:'')}
+function setConn(ok){$('conn').textContent=ok?'● live':'○ offline';$('conn').style.color=ok?'#00ff7f':'#f44'}
+function render(d){
+if(d.hostname){document.title=d.hostname;$('hn').textContent=d.hostname}
+$('rpm').textContent=f(d.rpm,0);
+$('dir').textContent=d.dirNum>0?'Vorwärts':d.dirNum<0?'Rückwärts':'Stillstand';
+$('oil').textContent=f(d.oil_bar,2)+' bar';cls('oil',(d.oil_bar!=null&&d.oil_bar<0.5)?'w':'');
+$('rud').textContent=f(d.rudder_deg,1)+' °';
+['t0','t1','t2','t3'].forEach(function(id,i){
+var v=d['temp'+i];
+$(id).textContent=(v==null?'--':v.toFixed(1)+' °C');cls(id,(v!=null&&v>95)?'b':'');
+var l=$(id+'l');if(l)l.textContent=(d[id+'_name']||('T'+i))});
+$('at').textContent=f(d.air_temp,1)+' °C';
+$('hum').textContent=f(d.humidity,0)+' %';
+$('pres').textContent=f(d.pressure_hpa,0)+' hPa';
+$('gas').textContent=f(d.gas_kohm,0)+' kΩ';
+$('cbst').textContent=d.can_ok?'Online':'Fehler';
+$('cbtx').textContent=f(d.can_tx);$('cbrx').textContent=f(d.can_rx);
+$('cbte').textContent=f(d.can_txerr);$('cbre').textContent=f(d.can_rxerr);
+$('cbrec').textContent=f(d.can_recoveries);
+$('host').textContent=f(d.hostname);
+$('ip').textContent=f(d.ip);
+$('wifi').textContent=d.wifi?'verbunden':'getrennt';
+$('up').textContent=upt(d.uptime_s)}
+var fails=0;
+function schedule(){setTimeout(tick,1000)}
+function tick(){
+var ac=new AbortController();var to=setTimeout(function(){ac.abort()},5000);
+fetch('/api/data',{cache:'no-store',signal:ac.signal})
+.then(function(r){if(!r.ok)throw 0;return r.json()})
+.then(function(d){clearTimeout(to);fails=0;setConn(true);render(d);schedule()})
+.catch(function(){clearTimeout(to);if(++fails>=3)setConn(false);schedule()})}
+tick();
 </script>
 </body></html>)rawhtml";
 
@@ -1178,7 +1114,7 @@ void setup() {
   }
 
   // ── N2K-Adresse Status Item ──────────────────────────────
-  g_st_n2k_addr = new StatusPageItem<uint8_t>("N2K-Adresse", n2k_addr, "Canbus", 140);
+  g_st_n2k_addr = new StatusPageItem<uint8_t>("N2K-Adresse", n2k_addr, "Canbus", 110);
 
   // ── ADC Konfiguration laden (SPIFFS jetzt bereit) ────────
   g_adc_cfg = std::make_shared<ADCConfig>();   // load() intern
@@ -1228,9 +1164,11 @@ void setup() {
 
   // ── Device-Status Items: Canbus + Dashboard-Link ─────────
   g_st_can_state = new StatusPageItem<String>  ("Status",     "unbekannt", "Canbus", 100);
-  g_st_can_tx    = new StatusPageItem<uint32_t>("TX Pakete",  0,           "Canbus", 110);
-  g_st_can_err   = new StatusPageItem<uint32_t>("TX Fehler",  0,           "Canbus", 120);
+  g_st_can_tx    = new StatusPageItem<uint32_t>("TX Pakete",  0,           "Canbus", 120);
   g_st_can_rx    = new StatusPageItem<uint32_t>("RX Pakete",  0,           "Canbus", 130);
+  g_st_can_err   = new StatusPageItem<uint32_t>("TX Fehler",  0,           "Canbus", 140);
+  g_st_can_rxerr = new StatusPageItem<uint32_t>("RX Fehler",  0,           "Canbus", 150);
+  g_st_can_recov = new StatusPageItem<uint32_t>("Recoveries", 0,           "Canbus", 160);
 
   // ── Sensor-Werte auf der Status-Seite (Gruppe "Sensoren") ──
   auto* st_rpm    = new StatusPageItem<String>("Drehzahl",  "--", "Sensoren", 10);

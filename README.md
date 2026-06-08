@@ -1,99 +1,81 @@
-# AchternSensorik - Wellendrehzahl & Richtungserkennung
+# SH-firmware-Achtern — AchternSensorik
 
-## Übersicht
+SensESP firmware for the **AchternSensorik** unit (ESP32). It measures propeller
+**shaft speed and rotation direction** (one Hall sensor + 3 magnets at 1:2:4
+spacing) plus engine and environment sensors, and publishes everything over
+**NMEA 2000** and **Signal K** with a live web dashboard.
 
-ESP32-basiertes Sensorsystem für Marine-Anwendungen zur Bestimmung von Wellendrehzahl und Drehrichtung mittels eines Hall-Sensors und 3 Magneten.
+## Drehrichtungs-Messprinzip (shaft direction)
 
-## Messprinzip: Drehrichtungserkennung
-
-Drei Magnete sind außen an der Welle befestigt mit **ungleichmäßigen Abständen (1:2:4)**:
+Three magnets on the shaft at **unequal spacing (1 : 2 : 4)**:
 
 ```
-        Welle (Draufsicht)
-        
             M1 (0°)
-           /
     ------●----------
    |      |    1     |
-   |      |          |
-   |  4   ●  M2     |   Gesamtumfang = 7 Einheiten
-   |      |  (51°)   |   1 Einheit = 51.4°
-   |      |          |
+   |  4   ●  M2 (51°)|   Umfang = 7 Einheiten (1 Einheit ≈ 51.4°)
    |      |    2     |
     ------●----------
           M3 (154°)
 ```
 
-**Vorwärtsdrehung (CW):** Intervallfolge kurz → mittel → lang (1:2:4)  
-**Rückwärtsdrehung (CCW):** Intervallfolge lang → mittel → kurz (4:2:1)
+- **Vorwärts (CW):** Intervallfolge kurz → mittel → lang (1:2:4)
+- **Rückwärts (CCW):** Intervallfolge lang → mittel → kurz (4:2:1)
 
-Der Algorithmus erkennt die Drehrichtung durch Vergleich der zeitlichen Abstände zwischen aufeinanderfolgenden Impulsen.
+Direction is recognised from the ordering of the pulse intervals; RPM from the
+total time of the three pulses. It can be inverted in the web UI
+("Wellendrehrichtung → Richtung umdrehen") if the sensor is mounted the other way.
 
 ## Pin-Belegung
 
-| GPIO | Funktion                    |
-|------|-----------------------------|
-| 27   | Hall-Sensor (Engine RPM)    |
-| 5    | CAN TX (NMEA2000)           |
-| 4    | CAN RX (NMEA2000)           |
-| 13   | OneWire Bus (DS18B20 x4)    |
-| 21   | I2C SDA (BME680 + OLED)     |
-| 22   | I2C SCL (BME680 + OLED)     |
-| 34   | ADC RUDDER Voltage 12v      |
-| 35   | ADC ENGINE Oilpressure pa   |
+| GPIO | Funktion |
+|------|----------|
+| 27 | Hall-Sensor (Wellendrehzahl + Richtung) |
+| 34 | ADC Ruder-Spannung → Winkel |
+| 35 | ADC Öldruck |
+| 13 | 1-Wire (4× DS18B20: Kühlwasser, Öl, Maschinenraum, Abgas) |
+| 21 / 22 | I²C SDA / SCL (BME680 + SSD1306 OLED) |
+| 4 / 5 | CAN RX / TX (NMEA 2000) |
 
-## Ausgabekanäle
+## NMEA 2000 / Signal K
+- PGN 127488 — engine RPM (`propulsion.0.revolutions`)
+- PGN 127245 — rudder angle (`steering.rudderAngle`)
+- PGN 127489 — engine dynamic: oil pressure + oil/coolant temperatures
+- BME680 → `environment.outside.{temperature,humidity,pressure,gasResistance}`
 
-1. **NMEA2000** - PGN 127488 (Engine RPM), alle 500ms
-	**NMEA2000** - PGN 127245 (RUDDER), alle 500ms
-	**NMEA2000** - PGN 127489 (ENGINE Oil pressure,oil temperature, coolant temperature )
-2. **WebServer** - Live-Dashboard unter `http://192.168.4.1`
-3. **OLED Display** - 3 Seiten mit automatischem Wechsel (5s)
-4. **Serial** - Textausgabe alle 1s (115200 Baud)
+## Web interface (port 80)
+- `/` — SensESP configuration UI (with a **Dash** navbar item)
+- `/dash` — live dashboard: Welle · Motor & Ruder · Temperaturen · Umgebung ·
+  NMEA 2000 · System
+- `/status` — SensESP device status page (Sensoren + Canbus groups)
+- `/api/data` — live JSON · `/api/can` — CAN controller diagnostics
 
-## diese librarys verwenden für ap und web und vorbereiten auf signalk : 
-https://github.com/SignalK/SensESP
+In AP mode the unit is at `http://192.168.4.1` (SSID `AchternSensorik`); on a
+joined network via `http://AchternSensorik.local`.
 
-## für nmea2000: https://github.com/ttlappalainen/NMEA2000 bzw für ESP32
+## Configuration (web UI → Configuration; persisted in flash)
+- **Wellendrehrichtung** — "Richtung umdrehen" inverts forward/reverse (CW/CCW).
+- **ADC Kalibrierung** — voltage-divider factors for rudder / oil pressure.
+- **Temperatursensoren** — display names + offsets for the 4 DS18B20s.
+- **WLAN Access-Point** — auto-off after N minutes.
 
-
-## WiFi Access Point
-
-- **SSID:** `AchternSensorik`
-- **Passwort:** `REDACTED-AP-PW`
-- **IP:** `192.168.4.1`
-
-## OTA Update
-
-```bash
-# PlatformIO
-pio run -t upload --upload-port AchternSensorik.local
-
-# Arduino IDE
-# Werkzeuge → Port → AchternSensorik
-# Passwort: REDACTED-OTA-PW
+## Build & upload (PlatformIO, env `esp32dev`)
 ```
-
-## Aufbau mit PlatformIO
-
-```bash
-cd AchternSensorik
-pio run           # Kompilieren
-pio run -t upload # Upload via USB
-pio device monitor # Serielle Ausgabe
+pio run -e esp32dev          # build
 ```
+First flash via USB; afterwards OTA. The PlatformIO espota wrapper can stall, so
+call espota.py directly with an explicit host IP (`-I`):
+```
+python3 ~/.platformio/packages/framework-arduinoespressif32/tools/espota.py \
+  -i AchternSensorik.local -I <your-host-ip> -p 3232 \
+  -a <ota_password> -f .pio/build/esp32dev/firmware.bin
+```
+The Wi-Fi AP password and OTA password live in the gitignored `src/secrets.h`
+(copy `src/secrets.h.example` and fill it in). A pre-build script
+(`scripts/patch_sensesp_navbar.py`) injects the **Dash** navbar entry, since
+SensESP's route list is hardcoded and can't be extended from the sketch.
 
-## Benötigte Hardware
-
-- ESP32 DevKit
-- Hall-Sensor (z.B. A3144, SS49E)
-- 3x Neodym-Magnete
-- SSD1306 OLED 128x64 (I2C)
-- CAN-Transceiver (MCP2551 oder SN65HVD230)
-- BME680 Breakout (optional)
-- 1-4x DS18B20 Temperatursensoren
-- 2x Spannungsteiler (100K/27K) bei 14V max
-
-
-
-
+## Hardware
+ESP32 DevKit · Hall sensor (A3144 / SS49E) · 3× neodymium magnets · SSD1306 OLED
+128×64 (I²C) · CAN transceiver (SN65HVD230) · BME680 (optional) · 1–4× DS18B20 ·
+2× voltage dividers (100K/27K) for the 12 V analog inputs.
