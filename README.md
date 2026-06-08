@@ -79,3 +79,36 @@ SensESP's route list is hardcoded and can't be extended from the sketch.
 ESP32 DevKit · Hall sensor (A3144 / SS49E) · 3× neodymium magnets · SSD1306 OLED
 128×64 (I²C) · CAN transceiver (SN65HVD230) · BME680 (optional) · 1–4× DS18B20 ·
 2× voltage dividers (100K/27K) for the 12 V analog inputs.
+
+---
+
+## English translation
+
+### Shaft-direction measurement principle
+
+Three magnets on the shaft at **unequal spacing (1 : 2 : 4)**:
+
+- **Forward (CW):** pulse interval sequence short → medium → long (1 : 2 : 4)
+- **Reverse (CCW):** pulse interval sequence long → medium → short (4 : 2 : 1)
+
+The direction is detected from the ordering of the pulse intervals; RPM is derived
+from the total time of all three pulses. Direction can be inverted in the web UI
+("Shaft direction → Invert direction") if the sensor is mounted the other way around.
+
+### Pin assignment
+
+| GPIO | Function |
+|------|----------|
+| 27 | Hall sensor (shaft speed + direction) |
+| 34 | ADC rudder voltage → angle |
+| 35 | ADC oil pressure |
+| 13 | 1-Wire (4× DS18B20: coolant, oil, engine room, exhaust) |
+| 21 / 22 | I²C SDA / SCL (BME680 + SSD1306 OLED) |
+| 4 / 5 | CAN RX / TX (NMEA 2000) |
+
+### Configuration (web UI → Configuration; stored in flash)
+
+- **Shaft direction** — "Invert direction" swaps forward/reverse (CW/CCW).
+- **ADC calibration** — voltage-divider factors for rudder and oil pressure inputs.
+- **Temperature sensors** — display names and offsets for the 4 DS18B20s.
+- **Wi-Fi Access Point** — auto-off after N minutes.
