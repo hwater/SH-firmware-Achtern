@@ -68,8 +68,11 @@
 #include "sensesp/system/saveable.h"
 #include "sensesp/ui/config_item.h"
 #include "sensesp/ui/status_page_item.h"
+#include "sensesp/transforms/linear.h"
+#include "sensesp_onewire/onewire_temperature.h"
 
 using namespace sensesp;
+using namespace sensesp::onewire;
 
 // ════════════════════════════════════════════════════════════
 //  HARDWARE Includes
@@ -83,8 +86,6 @@ using namespace sensesp;
 #include <N2kMessages.h>
 #include <Adafruit_SSD1306.h>
 #include <Adafruit_BME680.h>
-#include <OneWire.h>
-#include <DallasTemperature.h>
 
 // ════════════════════════════════════════════════════════════
 //  KONFIGURATION
@@ -186,8 +187,8 @@ struct SensorData {
 // ── Objekte ──────────────────────────────────────────────
 Adafruit_SSD1306  display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 Adafruit_BME680   bme;
-OneWire           oneWire(ONE_WIRE_BUS);
-DallasTemperature dallasSensors(&oneWire);
+// DS18B20 temperatures are handled by SensESP OneWireTemperature (see setup()).
+DallasTemperatureSensors* dts = nullptr;
 
 // ── OLED-State ───────────────────────────────────────────
 uint8_t  displayPage    = 0;
@@ -353,27 +354,19 @@ static std::shared_ptr<ADCConfig> g_adc_cfg;
 
 class TempConfig : public FileSystemSaveable {
  public:
-  String names[4]   = {"Kuehlwasser", "Oel", "Maschinenraum", "Abgas"};
-  float  offsets[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  String names[4] = {"Kuehlwasser", "Oel", "Maschinenraum", "Abgas"};
 
   TempConfig() : FileSystemSaveable("/temp/config") { load(); }
 
   bool to_json(JsonObject& root) override {
-    for (int i = 0; i < 4; i++) {
-      String kn = String("t") + i + "_name";
-      String ko = String("t") + i + "_off";
-      root[kn] = names[i];
-      root[ko] = offsets[i];
-    }
+    for (int i = 0; i < 4; i++) root[String("t") + i + "_name"] = names[i];
     return true;
   }
 
   bool from_json(const JsonObject& cfg) override {
     for (int i = 0; i < 4; i++) {
       String kn = String("t") + i + "_name";
-      String ko = String("t") + i + "_off";
-      if (cfg[kn].is<const char*>()) names[i]   = cfg[kn].as<const char*>();
-      if (cfg[ko].is<float>())       offsets[i] = cfg[ko].as<float>();
+      if (cfg[kn].is<const char*>()) names[i] = cfg[kn].as<const char*>();
     }
     return true;
   }
@@ -382,13 +375,9 @@ class TempConfig : public FileSystemSaveable {
 inline const String ConfigSchema(const TempConfig&) {
   return R"###({"type":"object","properties":{
     "t0_name":{"title":"T0 Name","type":"string","description":"Anzeigename Sensor 0 (Standard: Kuehlwasser)"},
-    "t0_off":{"title":"T0 Offset (Grad C)","type":"number","description":"Korrekturwert wird auf gemessenen Wert addiert"},
     "t1_name":{"title":"T1 Name","type":"string","description":"Anzeigename Sensor 1 (Standard: Oel)"},
-    "t1_off":{"title":"T1 Offset (Grad C)","type":"number"},
     "t2_name":{"title":"T2 Name","type":"string","description":"Anzeigename Sensor 2 (Standard: Maschinenraum)"},
-    "t2_off":{"title":"T2 Offset (Grad C)","type":"number"},
-    "t3_name":{"title":"T3 Name","type":"string","description":"Anzeigename Sensor 3 (Standard: Abgas)"},
-    "t3_off":{"title":"T3 Offset (Grad C)","type":"number"}
+    "t3_name":{"title":"T3 Name","type":"string","description":"Anzeigename Sensor 3 (Standard: Abgas)"}
   }})###";
 }
 
@@ -459,19 +448,8 @@ void readADC() {
 //  TEMPERATURSENSOREN
 // ════════════════════════════════════════════════════════════
 
-void readTemperatures() {
-  dallasSensors.requestTemperatures();
-  sd.tempCount = min((int)dallasSensors.getDeviceCount(), 4);
-  for (int i = 0; i < sd.tempCount; i++) {
-    float t = dallasSensors.getTempCByIndex(i);
-    if (t == DEVICE_DISCONNECTED_C) {
-      sd.temp[i] = NAN;
-    } else {
-      sd.temp[i] = t + (g_temp_cfg ? g_temp_cfg->offsets[i] : 0.0f);
-    }
-  }
-  for (int i = sd.tempCount; i < 4; i++) sd.temp[i] = NAN;
-}
+// DS18B20 temperatures are read by SensESP OneWireTemperature sensors set up in
+// setup(); each updates sd.temp[i] via its own consumer (see below).
 
 void readBME680() {
   if (!sd.bmeOk) return;
@@ -1054,10 +1032,10 @@ void setup() {
     Serial.println(F("BME680: nicht gefunden (optional)"));
   }
 
-  // ── DS18B20 ─────────────────────────────────────────────
-  dallasSensors.begin();
-  sd.tempCount = min((int)dallasSensors.getDeviceCount(), 4);
-  Serial.printf("DS18B20: %d Sensoren\n", sd.tempCount);
+  // ── DS18B20 (SensESP OneWire) ───────────────────────────
+  // Bus manager; individual sensors are created below and assigned by address
+  // in the web UI.
+  dts = new DallasTemperatureSensors(ONE_WIRE_BUS);
 
   // ── ADC ─────────────────────────────────────────────────
   analogReadResolution(12);
@@ -1287,34 +1265,33 @@ void setup() {
   oilSensor->connect_to(new SKOutput<float>(
       "propulsion.0.oilPressure", "/propulsion/oilPressure"));
 
-  // ── DS18B20 T0: Kühlwasser (K) ───────────────────────────
-  auto* coolantSensor = new RepeatSensor<float>(INTERVAL_TEMP_MS, []() -> float {
-    return isnan(sd.temp[0]) ? NAN : sd.temp[0] + 273.15f;
-  });
-  coolantSensor->connect_to(new SKOutput<float>(
-      "propulsion.0.coolantTemperature", "/propulsion/coolantTemp"));
-
-  // ── DS18B20 T1: Öltemperatur (K) ────────────────────────
-  auto* oilTempSensor = new RepeatSensor<float>(INTERVAL_TEMP_MS, []() -> float {
-    return isnan(sd.temp[1]) ? NAN : sd.temp[1] + 273.15f;
-  });
-  oilTempSensor->connect_to(new SKOutput<float>(
-      "propulsion.0.oilTemperature", "/propulsion/oilTemp"));
-
-  // ── DS18B20 T2: Maschinenraum (K) ───────────────────────
-  auto* erTempSensor = new RepeatSensor<float>(INTERVAL_TEMP_MS, []() -> float {
-    return isnan(sd.temp[2]) ? NAN : sd.temp[2] + 273.15f;
-  });
-  erTempSensor->connect_to(new SKOutput<float>(
-      "environment.inside.engineRoom.temperature",
-      "/environment/engineRoomTemp"));
-
-  // ── DS18B20 T3: Abgastemperatur (K) ─────────────────────
-  auto* exhSensor = new RepeatSensor<float>(INTERVAL_TEMP_MS, []() -> float {
-    return isnan(sd.temp[3]) ? NAN : sd.temp[3] + 273.15f;
-  });
-  exhSensor->connect_to(new SKOutput<float>(
-      "propulsion.0.exhaustTemperature", "/propulsion/exhaustTemp"));
+  // ── DS18B20 Temperaturen (SensESP OneWireTemperature) ─────────────────────
+  // Each sensor is assigned by its 1-Wire address in the web UI, with a Linear
+  // calibration and SK path (like SH-firmware-Perkins). OneWireTemperature emits
+  // Kelvin; we mirror °C into sd.temp[idx] for the dash / OLED / NMEA 2000.
+  auto addTemp = [](const String& base, const String& title, const char* sk_path,
+                    int order, int idx) {
+    auto* t = new OneWireTemperature(dts, INTERVAL_TEMP_MS, base + "/oneWire");
+    ConfigItem(t)->set_title(title)
+        ->set_description("DS18B20 1-Wire Sensor: " + title)
+        ->set_sort_order(order);
+    auto* cal = new Linear(1.0, 0.0, base + "/linear");
+    ConfigItem(cal)->set_title(title + " Kalibrierung")
+        ->set_description("Linear-Kalibrierung (Faktor/Offset) fuer " + title)
+        ->set_sort_order(order + 1);
+    auto* sk = new SKOutputFloat(sk_path, base + "/skPath");
+    ConfigItem(sk)->set_title(title + " Signal K Pfad")
+        ->set_description("Signal K Pfad fuer " + title)
+        ->set_sort_order(order + 2);
+    t->connect_to(cal);
+    cal->connect_to(sk);
+    cal->connect_to(new LambdaConsumer<float>(
+        [idx](float kelvin) { sd.temp[idx] = kelvin - 273.15f; }));
+  };
+  addTemp("/Temp/Kuehlwasser",   "Kuehlwasser Temperatur",   "propulsion.0.coolantTemperature",           300, 0);
+  addTemp("/Temp/Oel",           "Oel Temperatur",           "propulsion.0.oilTemperature",               310, 1);
+  addTemp("/Temp/Maschinenraum", "Maschinenraum Temperatur", "environment.inside.engineRoom.temperature", 320, 2);
+  addTemp("/Temp/Abgas",         "Abgas Temperatur",         "propulsion.0.exhaustTemperature",           330, 3);
 
   // ── BME680: Außenluft Temperatur (K) ─────────────────────
   auto* airTempSensor = new RepeatSensor<float>(INTERVAL_BME_MS, []() -> float {
@@ -1352,9 +1329,8 @@ void setup() {
   // ADC lesen (Ruder + Öldruck)
   event_loop()->onRepeat(INTERVAL_ADC_MS,  []() { readADC(); });
 
-  // Temperatursensoren lesen
+  // BME680 lesen (DS18B20 werden von OneWireTemperature selbst gelesen)
   event_loop()->onRepeat(INTERVAL_TEMP_MS, []() {
-    readTemperatures();
     readBME680();
   });
 

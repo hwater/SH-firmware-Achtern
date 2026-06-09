@@ -56,7 +56,9 @@ joined network via `http://AchternSensorik.local`.
 ## Configuration (web UI → Configuration; persisted in flash)
 - **Wellendrehrichtung** — "Richtung umdrehen" inverts forward/reverse (CW/CCW).
 - **ADC Kalibrierung** — voltage-divider factors for rudder / oil pressure.
-- **Temperatursensoren** — display names + offsets for the 4 DS18B20s.
+- **Temperatursensoren** — per DS18B20 (SensESP `OneWireTemperature`): assign the
+  **1-Wire address**, set a **Linear calibration**, and the **SK path**; plus a
+  display name. Addresses are auto-claimed on first boot and re-mappable here.
 - **WLAN Access-Point** — auto-off after N minutes.
 
 ## Build & upload (PlatformIO, env `esp32dev`)
@@ -110,5 +112,7 @@ from the total time of all three pulses. Direction can be inverted in the web UI
 
 - **Shaft direction** — "Invert direction" swaps forward/reverse (CW/CCW).
 - **ADC calibration** — voltage-divider factors for rudder and oil pressure inputs.
-- **Temperature sensors** — display names and offsets for the 4 DS18B20s.
+- **Temperature sensors** — per DS18B20 (SensESP `OneWireTemperature`): assign the
+  **1-Wire address**, set a **Linear calibration**, and the **SK path**; plus a
+  display name. Addresses are auto-claimed on first boot and re-mappable here.
 - **Wi-Fi Access Point** — auto-off after N minutes.
