@@ -671,7 +671,8 @@ String buildJsonData() {
     "\"air_temp\":%.2f,\"humidity\":%.1f,\"pressure_hpa\":%.1f,"
     "\"gas_kohm\":%.1f,\"uptime_s\":%lu,\"sk_ready\":true,"
     "\"can_ok\":%s,\"n2k_addr\":%u,\"can_tx\":%lu,\"can_err\":%lu,\"can_rx\":%lu,"
-    "\"can_txerr\":%lu,\"can_rxerr\":%lu,\"can_recoveries\":%lu,\"ip\":\"%s\",\"wifi\":%s}",
+    "\"can_txerr\":%lu,\"can_rxerr\":%lu,\"can_recoveries\":%lu,\"ip\":\"%s\",\"wifi\":%s,"
+    "\"free_heap\":%lu}",
     hn.c_str(),
     sd.rpm, dStr, sd.direction,
     sd.shaftValid?"true":"false",
@@ -688,7 +689,8 @@ String buildJsonData() {
     (unsigned long)canTxErr, (unsigned long)canRxErr,
     (unsigned long)canRecoveries,
     WiFi.localIP().toString().c_str(),
-    (WiFi.status() == WL_CONNECTED) ? "true" : "false"
+    (WiFi.status() == WL_CONNECTED) ? "true" : "false",
+    (unsigned long)ESP.getFreeHeap()
   );
   return String(buf);
 }
@@ -898,7 +900,8 @@ header h1{font-size:18px;margin:0;letter-spacing:.04em}#conn{font-size:13px;colo
 <div class="row"><span class="l">Hostname</span><span class="v" id="host">--</span></div>
 <div class="row"><span class="l">IP</span><span class="v" id="ip">--</span></div>
 <div class="row"><span class="l">WLAN</span><span class="v" id="wifi">--</span></div>
-<div class="row"><span class="l">Laufzeit</span><span class="v" id="up">--</span></div></div>
+<div class="row"><span class="l">Laufzeit</span><span class="v" id="up">--</span></div>
+<div class="row"><span class="l">Freier Speicher</span><span class="v" id="heap">--</span></div></div>
 </div>
 <script>
 var $=function(i){return document.getElementById(i)};
@@ -928,7 +931,8 @@ $('cbrec').textContent=f(d.can_recoveries);
 $('host').textContent=f(d.hostname);
 $('ip').textContent=f(d.ip);
 $('wifi').textContent=d.wifi?'verbunden':'getrennt';
-$('up').textContent=upt(d.uptime_s)}
+$('up').textContent=upt(d.uptime_s);
+$('heap').textContent=d.free_heap!=null?Math.round(d.free_heap/1024)+' kB':'--'}
 var fails=0;
 function schedule(){setTimeout(tick,1000)}
 function tick(){
