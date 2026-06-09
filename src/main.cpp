@@ -202,6 +202,7 @@ uint32_t canRecoveries = 0;
 uint32_t canLastRecoveryMs = 0;
 uint32_t canTxErr = 0;   // SJA1000 TX error counter, cached from the event loop
 uint32_t canRxErr = 0;   // SJA1000 RX error counter, cached from the event loop
+uint8_t  canN2kAddr = 255; // live N2K source address after address claiming
 
 // ── NMEA2000 ─────────────────────────────────────────────
 tNMEA2000* nmea2000;
@@ -521,11 +522,14 @@ void sendNMEA2000() {
   canTxErr = MODULE_CAN->TXERR.B.TXERR;
   canRxErr = MODULE_CAN->RXERR.B.RXERR;
 
+  canN2kAddr = nmea2000->GetN2kSource();
+
   if (g_st_can_state) g_st_can_state->set(canBusOk ? "OK (online)" : "Fehler");
   if (g_st_can_tx)    g_st_can_tx->set(canTxPkts);
   if (g_st_can_err)   g_st_can_err->set(canTxErr);
   if (g_st_can_rxerr) g_st_can_rxerr->set(canRxErr);
   if (g_st_can_recov) g_st_can_recov->set(canRecoveries);
+  if (g_st_n2k_addr)  g_st_n2k_addr->set(canN2kAddr);
 }
 
 // ════════════════════════════════════════════════════════════
@@ -666,7 +670,7 @@ String buildJsonData() {
     "\"t0_name\":\"%s\",\"t1_name\":\"%s\",\"t2_name\":\"%s\",\"t3_name\":\"%s\","
     "\"air_temp\":%.2f,\"humidity\":%.1f,\"pressure_hpa\":%.1f,"
     "\"gas_kohm\":%.1f,\"uptime_s\":%lu,\"sk_ready\":true,"
-    "\"can_ok\":%s,\"can_tx\":%lu,\"can_err\":%lu,\"can_rx\":%lu,"
+    "\"can_ok\":%s,\"n2k_addr\":%u,\"can_tx\":%lu,\"can_err\":%lu,\"can_rx\":%lu,"
     "\"can_txerr\":%lu,\"can_rxerr\":%lu,\"can_recoveries\":%lu,\"ip\":\"%s\",\"wifi\":%s}",
     hn.c_str(),
     sd.rpm, dStr, sd.direction,
@@ -680,7 +684,7 @@ String buildJsonData() {
     isnan(sd.pressure)?0.0f:sd.pressure,
     isnan(sd.gasRes)  ?0.0f:sd.gasRes,
     millis()/1000UL,
-    canBusOk?"true":"false", canTxPkts, canErrPkts, canRxPkts,
+    canBusOk?"true":"false", (unsigned)canN2kAddr, canTxPkts, canErrPkts, canRxPkts,
     (unsigned long)canTxErr, (unsigned long)canRxErr,
     (unsigned long)canRecoveries,
     WiFi.localIP().toString().c_str(),
@@ -886,6 +890,7 @@ header h1{font-size:18px;margin:0;letter-spacing:.04em}#conn{font-size:13px;colo
 <div class="row"><span class="l">Gas-Widerstand</span><span class="v" id="gas">--</span></div></div>
 <div class="card plain"><h2>NMEA 2000</h2>
 <div class="row"><span class="l">Status</span><span class="v" id="cbst">--</span></div>
+<div class="row"><span class="l">Geräteadresse</span><span class="v" id="cbaddr">--</span></div>
 <div class="row"><span class="l">TX / RX Pakete</span><span class="v"><span id="cbtx">--</span> / <span id="cbrx">--</span></span></div>
 <div class="row"><span class="l">TX / RX Fehler</span><span class="v"><span id="cbte">--</span> / <span id="cbre">--</span></span></div>
 <div class="row"><span class="l">Recoveries</span><span class="v" id="cbrec">--</span></div></div>
@@ -916,6 +921,7 @@ $('hum').textContent=f(d.humidity,0)+' %';
 $('pres').textContent=f(d.pressure_hpa,0)+' hPa';
 $('gas').textContent=f(d.gas_kohm,0)+' kΩ';
 $('cbst').textContent=d.can_ok?'Online':'Fehler';
+$('cbaddr').textContent=d.n2k_addr!=null?(d.n2k_addr===255?'claiming…':String(d.n2k_addr)):'--';
 $('cbtx').textContent=f(d.can_tx);$('cbrx').textContent=f(d.can_rx);
 $('cbte').textContent=f(d.can_txerr);$('cbre').textContent=f(d.can_rxerr);
 $('cbrec').textContent=f(d.can_recoveries);
