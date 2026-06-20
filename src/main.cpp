@@ -628,6 +628,21 @@ static String jsEsc(const String& s) {
   return o;
 }
 
+// Signal-K WebSocket-Client Verbindungsstatus als kurzer Anzeige-String.
+// get_connection_state() ist protected, daher das public get_connection_status()
+// (liefert englische Strings) nutzen und ins Deutsche uebersetzen.
+static const char* skStatusStr() {
+  if (!sensesp_app) return "n/a";
+  auto ws = sensesp_app->get_ws_client();
+  if (!ws) return "n/a";
+  String s = ws->get_connection_status();
+  if (s == "Connected")   return "verbunden";
+  if (s == "Connecting")  return "verbindet…";
+  if (s.startsWith("Authorizing")) return "autorisiert…";
+  if (s == "Disconnected") return "getrennt";
+  return "unbekannt";
+}
+
 String buildJsonData() {
   char buf[1100], t[4][12];
   for (int i = 0; i < 4; i++) {
@@ -647,7 +662,7 @@ String buildJsonData() {
     "\"temp0\":%s,\"temp1\":%s,\"temp2\":%s,\"temp3\":%s,"
     "\"t0_name\":\"%s\",\"t1_name\":\"%s\",\"t2_name\":\"%s\",\"t3_name\":\"%s\","
     "\"air_temp\":%.2f,\"humidity\":%.1f,\"pressure_hpa\":%.1f,"
-    "\"gas_kohm\":%.1f,\"uptime_s\":%lu,\"sk_ready\":true,"
+    "\"gas_kohm\":%.1f,\"uptime_s\":%lu,\"sk_ready\":true,\"sk\":\"%s\","
     "\"can_ok\":%s,\"n2k_addr\":%u,\"can_tx\":%lu,\"can_err\":%lu,\"can_rx\":%lu,"
     "\"can_txerr\":%lu,\"can_rxerr\":%lu,\"can_recoveries\":%lu,\"ip\":\"%s\",\"wifi\":%s,"
     "\"free_heap\":%lu}",
@@ -663,6 +678,7 @@ String buildJsonData() {
     isnan(sd.pressure)?0.0f:sd.pressure,
     isnan(sd.gasRes)  ?0.0f:sd.gasRes,
     millis()/1000UL,
+    skStatusStr(),
     canBusOk?"true":"false", (unsigned)canN2kAddr, canTxPkts, canErrPkts, canRxPkts,
     (unsigned long)canTxErr, (unsigned long)canRxErr,
     (unsigned long)canRecoveries,
@@ -877,7 +893,7 @@ header h1{font-size:18px;margin:0;letter-spacing:.04em}#conn{font-size:13px;colo
 <div class="card plain"><h2>System</h2>
 <div class="row"><span class="l">Hostname</span><span class="v" id="host">--</span></div>
 <div class="row"><span class="l">IP</span><span class="v" id="ip">--</span></div>
-<div class="row"><span class="l">WLAN</span><span class="v" id="wifi">--</span></div>
+<div class="row"><span class="l">Signal K</span><span class="v" id="sk">--</span></div>
 <div class="row"><span class="l">Laufzeit</span><span class="v" id="up">--</span></div>
 <div class="row"><span class="l">Freier Speicher</span><span class="v" id="heap">--</span></div></div>
 </div>
@@ -908,7 +924,7 @@ $('cbte').textContent=f(d.can_txerr);$('cbre').textContent=f(d.can_rxerr);
 $('cbrec').textContent=f(d.can_recoveries);
 $('host').textContent=f(d.hostname);
 $('ip').textContent=f(d.ip);
-$('wifi').textContent=d.wifi?'verbunden':'getrennt';
+$('sk').textContent=d.sk||'--';
 $('up').textContent=upt(d.uptime_s);
 $('heap').textContent=d.free_heap!=null?Math.round(d.free_heap/1024)+' kB':'--'}
 var fails=0;

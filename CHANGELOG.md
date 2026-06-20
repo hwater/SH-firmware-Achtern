@@ -27,7 +27,10 @@ Most recent first.
   live/offline status. Sensor cards (Welle, Motor & Ruder, Temperaturen, Umgebung)
   in green; **NMEA 2000** and **System** cards in white. Blue status badges and the
   restart button removed.
-- **System card** — Hostname, IP, WLAN, Laufzeit, and free heap. (`4e6777c`, `04c7597`)
+- **System card** — Hostname, IP, **Signal K** (replaces the old WLAN row),
+  Laufzeit, and free heap. The Signal K row shows the live SK WebSocket client
+  state (verbunden / verbindet… / autorisiert… / getrennt) via the new `sk`
+  field in `/api/data`. (`4e6777c`, `04c7597`)
 - **NMEA 2000 card + status "Canbus" group** — TX/RX Pakete, **TX/RX Fehler**
   (SJA1000 TXERR/RXERR registers, cached from the event loop), **Recoveries**, and
   the **device address** — matching Perkins. (`4e6777c`, `c7e455e`)
