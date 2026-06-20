@@ -22,6 +22,19 @@ WiFiProvisioner::load() may override it with an older value stored in SPIFFS
 This patch lowercases the AP SSID right after load() so it always matches the
 mDNS hostname, satisfying the case-sensitive origin check in the browser's
 Origin header.
+
+--- Patch 4 (http_server.h): Enable LRU purge on the ESP-IDF httpd ---
+SensESP starts the ESP-IDF http server with HTTPD_DEFAULT_CONFIG(), which sets
+max_open_sockets = 7 and lru_purge_enable = false.  Browsers on the boat WiFi
+(phones/tablets) keep HTTP/1.1 keep-alive sockets open; when they sleep or leave
+the network the TCP socket lingers as a half-open session the server never
+reclaims.  After ~7 such stale sessions accumulate (observed as the web-UI/API
+"hanging" after a few days uptime) the listener can no longer accept new
+connections.  Enabling lru_purge_enable makes the server drop the
+least-recently-used (oldest/stale) session to admit a new connection, so it
+self-heals instead of locking up.  (This framework's esp_http_server.h predates
+the keep_alive_* config fields, so TCP keep-alive probes are not available here;
+LRU purge is the portable fix.)
 """
 
 import glob
@@ -142,7 +155,31 @@ _WIFI_PROV_PATCHES = [
 ]
 
 # ---------------------------------------------------------------------------
+# Patch 4 – Enable LRU purge on the ESP-IDF httpd  (http_server.h)
+# Without it the server stops accepting connections once max_open_sockets (7)
+# stale keep-alive sessions pile up (web-UI "hangs" after a few days uptime).
+# Injected right before httpd_start, after the other config_ tweaks.
+# ---------------------------------------------------------------------------
+_LRU_ANCHOR = (
+    "    config_.uri_match_fn = httpd_uri_match_wildcard;\n"
+)
+_LRU_REPLACEMENT = _LRU_ANCHOR + (
+    "    // [achtern02] Self-heal long-uptime socket exhaustion: when all\n"
+    "    // max_open_sockets session slots are taken by stale/half-open\n"
+    "    // keep-alive connections, purge the least-recently-used one to admit\n"
+    "    // the new connection instead of refusing it (web-UI/API would\n"
+    "    // otherwise appear to hang after a few days). See patch_sensesp_navbar.py.\n"
+    "    config_.lru_purge_enable = true;\n"
+)
+
+_HTTP_SERVER_FILE = "SensESP/src/sensesp/net/http_server.h"
+_HTTP_SERVER_PATCHES = [
+    ("[achtern02] Self-heal long-uptime socket exhaustion", _LRU_ANCHOR, _LRU_REPLACEMENT),
+]
+
+# ---------------------------------------------------------------------------
 # Apply all patches
 # ---------------------------------------------------------------------------
 _patch_file(_BASE_CMD_FILE, _BASE_CMD_PATCHES)
 _patch_file(_WIFI_PROV_FILE, _WIFI_PROV_PATCHES)
+_patch_file(_HTTP_SERVER_FILE, _HTTP_SERVER_PATCHES)

@@ -13,6 +13,15 @@ Most recent first.
 - **Shaft‑direction invert flag** ("Richtung umdrehen") on the Configuration
   page, for sensors mounted the other way around. (`b9df9f7`)
 
+## Stability
+- **HTTP server no longer hangs after a few days uptime**: SensESP starts the
+  ESP‑IDF `httpd` with `HTTPD_DEFAULT_CONFIG()` (`max_open_sockets = 7`,
+  `lru_purge_enable = false`). Stale keep‑alive sockets from sleeping/departed
+  browsers piled up until the listener could no longer accept connections and the
+  web UI/API appeared frozen (~4 days). A pre‑build patch sets
+  `lru_purge_enable = true` so the oldest session is purged to admit a new one —
+  the server self‑heals. (`scripts/patch_sensesp_navbar.py`, Patch 4)
+
 ## Web interface
 - **Perkins‑style `/dash`** (`4e6777c`): dark card grid, SensESP logo → config UI,
   live/offline status. Sensor cards (Welle, Motor & Ruder, Temperaturen, Umgebung)
