@@ -13,6 +13,16 @@ Most recent first.
 - **Shaft‑direction invert flag** ("Richtung umdrehen") on the Configuration
   page, for sensors mounted the other way around. (`b9df9f7`)
 
+## NMEA 2000
+- **Stopped reporting this board's uptime as engine hours** (`dd8a3d3`): the
+  engine‑hours field of **PGN 127489** carried `millis()/1000`. Because this
+  board shares **engine instance 0** with the Perkins engine monitor, Signal K
+  picked that uptime over the Perkins board's real hour meter —
+  `propulsion.port.runTime` read 96.2 h (this board's uptime) instead of the
+  engine's 1445.7 h. This board has no hour meter, so the field is now
+  `N2kDoubleNA` and the Perkins monitor is the sole authority for engine hours.
+  Note both boards still send **PGN 127488** (RPM) on instance 0.
+
 ## Stability
 - **HTTP server no longer hangs after a few days uptime**: SensESP starts the
   ESP‑IDF `httpd` with `HTTPD_DEFAULT_CONFIG()` (`max_open_sockets = 7`,
