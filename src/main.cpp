@@ -484,10 +484,14 @@ void sendNMEA2000() {
 
   double coolantK = isnan(sd.temp[0]) ? N2kDoubleNA : (double)(sd.temp[0] + 273.15f);
   double oilTempK = isnan(sd.temp[1]) ? N2kDoubleNA : (double)(sd.temp[1] + 273.15f);
+  // Engine hours: NA. This board has no hour meter — it used to report its own
+  // uptime here, which collided with the Perkins monitor's real hour meter on
+  // the same engine instance and won on the bus. The Perkins board is the sole
+  // authority for PGN 127489 engine hours.
   SetN2kEngineDynamicParam(msg, N2K_ENGINE_INST,
     (double)sd.oilPressure, oilTempK, coolantK,
     N2kDoubleNA, N2kDoubleNA,
-    (double)millis() / 1000.0,
+    N2kDoubleNA,
     N2kDoubleNA, N2kDoubleNA, N2kInt8NA, N2kInt8NA,
     tN2kEngineDiscreteStatus1(0), tN2kEngineDiscreteStatus2(0));
   if (nmea2000->SendMsg(msg)) { canTxPkts++; cycleOk = true; }
