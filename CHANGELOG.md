@@ -14,6 +14,13 @@ Most recent first.
   page, for sensors mounted the other way around. (`b9df9f7`)
 
 ## NMEA 2000
+- **Moved to engine instance 1** (Signal K `propulsion.starboard`): instance 0
+  was shared with the Perkins engine monitor, so both boards' PGN 127488
+  overwrote each other as "Engine 0 RPM" — and they are not the same number,
+  since this board reads the propeller shaft and the Perkins board reads the
+  engine (alternator W terminal), separated by the gearbox ratio. Instance 0
+  now belongs to the Perkins monitor alone, keeping the actual engine on
+  `propulsion.port` where displays expect it.
 - **Stopped reporting this board's uptime as engine hours** (`dd8a3d3`): the
   engine‑hours field of **PGN 127489** carried `millis()/1000`. Because this
   board shares **engine instance 0** with the Perkins engine monitor, Signal K

@@ -38,9 +38,18 @@ total time of the three pulses. It can be inverted in the web UI
 | 4 / 5 | CAN RX / TX (NMEA 2000) |
 
 ## NMEA 2000 / Signal K
-- PGN 127488 — engine RPM (`propulsion.0.revolutions`)
+This board sends its engine PGNs on **engine instance 1** → Signal K
+`propulsion.starboard`. **Instance 0 (`propulsion.port`) belongs to the Perkins
+engine monitor** (`SH-firmware-Perkins`), which measures the engine itself; this
+board only sees the propeller shaft, and the gearbox ratio makes its RPM a
+different number. Do not move this board back onto instance 0 — the two boards
+then overwrite each other's engine PGNs.
+
+- PGN 127488 — shaft RPM (`propulsion.starboard.revolutions`)
 - PGN 127245 — rudder angle (`steering.rudderAngle`)
-- PGN 127489 — engine dynamic: oil pressure + oil/coolant temperatures
+- PGN 127489 — oil pressure + oil/coolant temperatures
+  (`propulsion.starboard.*`). The engine-hours field stays `N2kDoubleNA`: this
+  board has no hour meter, the Perkins monitor is the sole authority.
 - BME680 → `environment.outside.{temperature,humidity,pressure,gasResistance}`
 
 ## Web interface (port 80)

@@ -145,7 +145,11 @@ using namespace sensesp::onewire;
 #define DIR_TOLERANCE   0.25f
 
 // ── NMEA2000 ─────────────────────────────────────────────
-#define N2K_ENGINE_INST 0
+// Engine instance 1 (Signal K: propulsion.starboard). Instance 0 belongs to the
+// Perkins engine monitor, which measures the engine itself — this board only
+// sees the propeller shaft, and the gearbox ratio makes its RPM a different
+// number. Sharing an instance made the two overwrite each other's PGN 127488.
+#define N2K_ENGINE_INST 1
 #define N2K_RUDDER_INST 0
 
 // ════════════════════════════════════════════════════════════
