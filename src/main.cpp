@@ -162,9 +162,32 @@ volatile uint32_t pulseBuf[PULSE_BUF] = {0};
 volatile uint8_t  pulseBufHead        = 0;
 volatile uint32_t pulseCount          = 0;
 volatile uint32_t lastPulseMs         = 0;
+volatile uint32_t pulseGlitches       = 0;  // vom Glitch-Filter verworfene Flanken
 
+// Glitch-Filter: Die Welle hat 3 ungleich verteilte Magnete (44/77/220 mm),
+// der kleinste echte Pulsabstand ist ~1/7.75 (≈12.9 %) einer Umdrehung.
+// Rauschen/Prellen am Hall-Ausgang nahe der Schaltschwelle kann Zusatzflanken
+// erzeugen; die verkuerzen das 4-Zeitstempel-Fenster und lassen die berechnete
+// RPM auf ~das Doppelte springen. Deshalb Flanken verwerfen, die naeher als 5 %
+// der letzten Umdrehungsdauer (revSpan/20) an der vorigen liegen — deutlich
+// unter den 12.9 % echtem Minimum, mit Reserve auch bei starker Beschleunigung
+// (selbst bei Verdopplung der Drehzahl pro Umdrehung bleibt ~6.5 % > 5 %).
+// Zusaetzlich ein absoluter Boden von 300 µs (greift erst jenseits ~25000 RPM,
+// stoert also echte Pulse nie) als Schutz gegen Muell-Zeitstempel beim Start.
 void IRAM_ATTR hallISR() {
-  pulseBuf[pulseBufHead] = micros();
+  uint32_t now  = micros();
+  uint8_t  head = pulseBufHead;
+  uint32_t prev = pulseBuf[(head + PULSE_BUF - 1) % PULSE_BUF];  // letzter Zeitstempel
+  if (pulseCount >= PULSE_BUF) {
+    uint32_t revSpan  = prev - pulseBuf[head];  // Spanne der letzten 3 Abstaende ≈ 1 Umdrehung
+    uint32_t minGap   = revSpan / 20;           // 5 % einer Umdrehung
+    if (minGap < 300) minGap = 300;             // absoluter Boden (µs)
+    if ((uint32_t)(now - prev) < minGap) {      // unplausibel kurz → Glitch
+      pulseGlitches++;
+      return;
+    }
+  }
+  pulseBuf[pulseBufHead] = now;
   pulseBufHead = (pulseBufHead + 1) % PULSE_BUF;
   pulseCount++;
   lastPulseMs = millis();
@@ -608,10 +631,10 @@ void printSerial() {
   const char* d = (sd.direction>0) ? "CW/Vorwaerts" :
                   (sd.direction<0) ? "CCW/Rueckwaerts" : "STILLSTAND";
   Serial.printf(
-    "RPM=%.1f  Dir=%s  Ruder=%.1f°  Oel=%.2fbar "
+    "RPM=%.1f  Dir=%s  Glitch=%lu  Ruder=%.1f°  Oel=%.2fbar "
     "T0=%.1f T1=%.1f T2=%.1f T3=%.1f  "
     "Luft=%.1f°C  Up=%lus\n",
-    sd.rpm, d, sd.rudderAngle, sd.oilPressure/100000.0f,
+    sd.rpm, d, (unsigned long)pulseGlitches, sd.rudderAngle, sd.oilPressure/100000.0f,
     isnan(sd.temp[0])?0.0f:sd.temp[0],
     isnan(sd.temp[1])?0.0f:sd.temp[1],
     isnan(sd.temp[2])?0.0f:sd.temp[2],
