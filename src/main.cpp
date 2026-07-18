@@ -163,6 +163,7 @@ volatile uint8_t  pulseBufHead        = 0;
 volatile uint32_t pulseCount          = 0;
 volatile uint32_t lastPulseMs         = 0;
 volatile uint32_t pulseGlitches       = 0;  // vom Glitch-Filter verworfene Flanken
+uint32_t          rpmRejected         = 0;  // wg. Geometrie verworfene RPM-Messfenster
 
 // Glitch-Filter: Die Welle hat 3 ungleich verteilte Magnete (44/77/220 mm),
 // der kleinste echte Pulsabstand ist ~1/7.75 (≈12.9 %) einer Umdrehung.
@@ -312,9 +313,6 @@ void calcRPMandDirection() {
   float dt2 = (float)(t[3] - t[2]);
   if (dt0 <= 0 || dt1 <= 0 || dt2 <= 0) return;
 
-  // RPM: eine vollständige Umdrehung = alle 3 Abstände
-  sd.rpm = 60000000.0f / (dt0 + dt1 + dt2);
-
   // Normierung auf kleinsten Abstand → Verhältnisse
   float dtMin = min({dt0, dt1, dt2});
   float r0 = dt0 / dtMin, r1 = dt1 / dtMin, r2 = dt2 / dtMin;
@@ -330,9 +328,25 @@ void calcRPMandDirection() {
                (approx(r0,1.75f) && approx(r1,1.00f) && approx(r2,5.00f)) ||
                (approx(r0,1.00f) && approx(r1,5.00f) && approx(r2,1.75f));
 
-  if      (isCW)  { sd.direction = +1; sd.shaftValid = true; }
-  else if (isCCW) { sd.direction = -1; sd.shaftValid = true; }
-  else            { sd.shaftValid = true; }  // Richtung Hysterese
+  // ── Plausibilitaetspruefung (Geometrie) ────────────────────────────────
+  // Die 3 Abstaende MUESSEN eine zyklische Permutation des Magnetmusters
+  // 1.00/1.75/5.00 sein — nur dann ueberspannt das Fenster exakt eine
+  // Umdrehung und 60e6/(dt0+dt1+dt2) ist die echte Drehzahl.
+  // Rutscht ein Stoerpuls durch den ISR-Glitch-Filter (weil er nicht eng
+  // genug am echten Puls liegt), deckt das Fenster nur einen Bruchteil einer
+  // Umdrehung ab und die RPM liest deutlich zu hoch — in den Influx-Daten als
+  // gequantelte Ausreisser auf ~2.4x/2.7x/3.2x der echten Drehzahl sichtbar
+  // (890 -> 2125/2425/2810). Solche Fenster passen nie auf 1.00/1.75/5.00,
+  // also Messung verwerfen statt einen falschen Wert auszugeben.
+  if (!isCW && !isCCW) {
+    rpmRejected++;
+    sd.shaftValid = false;
+    return;  // sd.rpm und sd.direction behalten den letzten gueltigen Wert
+  }
+
+  sd.rpm        = 60000000.0f / (dt0 + dt1 + dt2);
+  sd.direction  = isCW ? +1 : -1;
+  sd.shaftValid = true;
 
   // Optional: Vorwaerts/Rueckwaerts vertauschen (Web-UI Flag "Richtung umdrehen").
   if (g_dir_cfg && g_dir_cfg->invert) sd.direction = -sd.direction;
@@ -631,10 +645,11 @@ void printSerial() {
   const char* d = (sd.direction>0) ? "CW/Vorwaerts" :
                   (sd.direction<0) ? "CCW/Rueckwaerts" : "STILLSTAND";
   Serial.printf(
-    "RPM=%.1f  Dir=%s  Glitch=%lu  Ruder=%.1f°  Oel=%.2fbar "
+    "RPM=%.1f  Dir=%s  Glitch=%lu  Rej=%lu  Ruder=%.1f°  Oel=%.2fbar "
     "T0=%.1f T1=%.1f T2=%.1f T3=%.1f  "
     "Luft=%.1f°C  Up=%lus\n",
-    sd.rpm, d, (unsigned long)pulseGlitches, sd.rudderAngle, sd.oilPressure/100000.0f,
+    sd.rpm, d, (unsigned long)pulseGlitches, (unsigned long)rpmRejected,
+    sd.rudderAngle, sd.oilPressure/100000.0f,
     isnan(sd.temp[0])?0.0f:sd.temp[0],
     isnan(sd.temp[1])?0.0f:sd.temp[1],
     isnan(sd.temp[2])?0.0f:sd.temp[2],
