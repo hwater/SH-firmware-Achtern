@@ -144,6 +144,9 @@ using namespace sensesp::onewire;
 // ── Drehrichtungs-Toleranz ───────────────────────────────
 #define DIR_TOLERANCE   0.25f
 
+// ── Spitzenfilter: ab welchem Faktor ein Sprung erst bestaetigt werden muss ──
+#define RPM_JUMP_FACTOR 1.5f
+
 // ── NMEA2000 ─────────────────────────────────────────────
 // Engine instance 1 (Signal K: propulsion.starboard). Instance 0 belongs to the
 // Perkins engine monitor, which measures the engine itself — this board only
@@ -164,6 +167,8 @@ volatile uint32_t pulseCount          = 0;
 volatile uint32_t lastPulseMs         = 0;
 volatile uint32_t pulseGlitches       = 0;  // vom Glitch-Filter verworfene Flanken
 uint32_t          rpmRejected         = 0;  // wg. Geometrie verworfene RPM-Messfenster
+uint32_t          rpmSpikes           = 0;  // unbestaetigte Ausreisser (Spitzenfilter)
+static float      rpmPending          = 0.0f;  // wartet auf Bestaetigung
 
 // Glitch-Filter: Die Welle hat 3 ungleich verteilte Magnete (44/77/220 mm),
 // der kleinste echte Pulsabstand ist ~1/7.75 (≈12.9 %) einer Umdrehung.
@@ -298,6 +303,7 @@ void calcRPMandDirection() {
     sd.rpm       = 0.0f;
     sd.direction = 0;
     sd.shaftValid = false;
+    rpmPending   = 0.0f;
     return;
   }
 
@@ -344,7 +350,34 @@ void calcRPMandDirection() {
     return;  // sd.rpm und sd.direction behalten den letzten gueltigen Wert
   }
 
-  sd.rpm        = 60000000.0f / (dt0 + dt1 + dt2);
+  float cand = 60000000.0f / (dt0 + dt1 + dt2);
+
+  // ── Spitzenfilter (Bestaetigung) ───────────────────────────────────────
+  // Restliche Stoerfenster (in den Influx-Daten die Familie ~2827 = 3.18x der
+  // echten 889 RPM) erfuellen das 1.00/1.75/5.00-Muster zufaellig in
+  // verkleinertem Massstab und passieren die Geometriepruefung. Sie treten
+  // aber immer als EINZELNE Spitze auf (890 -> 2827 -> 888), waehrend die
+  // Welle wegen ihrer Traegheit gar nicht so springen kann.
+  // Deshalb: einen grossen Sprung — und ebenso den allerersten Wert nach
+  // Boot/Stillstand, damit ein Ausreisser direkt nach dem Reset nicht
+  // durchrutscht — erst uebernehmen, wenn die naechste Messung ihn bestaetigt.
+  // Echte schnelle Aenderungen kommen so mit einer Messung (0.5 s) Verzug durch.
+  bool haveRef  = (sd.rpm > 20.0f);
+  bool bigJump  = haveRef && (cand > sd.rpm * RPM_JUMP_FACTOR ||
+                              cand * RPM_JUMP_FACTOR < sd.rpm);
+  if (bigJump || !haveRef) {
+    bool confirmed = (rpmPending > 0.0f) &&
+                     (fabsf(cand - rpmPending) <= rpmPending * 0.25f);
+    if (!confirmed) {
+      rpmPending = cand;   // merken und auf Bestaetigung warten
+      if (haveRef) rpmSpikes++;
+      sd.shaftValid = false;
+      return;              // sd.rpm/sd.direction bleiben unveraendert
+    }
+  }
+  rpmPending = 0.0f;
+
+  sd.rpm        = cand;
   sd.direction  = isCW ? +1 : -1;
   sd.shaftValid = true;
 
@@ -645,10 +678,11 @@ void printSerial() {
   const char* d = (sd.direction>0) ? "CW/Vorwaerts" :
                   (sd.direction<0) ? "CCW/Rueckwaerts" : "STILLSTAND";
   Serial.printf(
-    "RPM=%.1f  Dir=%s  Glitch=%lu  Rej=%lu  Ruder=%.1f°  Oel=%.2fbar "
+    "RPM=%.1f  Dir=%s  Glitch=%lu  Rej=%lu  Spike=%lu  Ruder=%.1f°  Oel=%.2fbar "
     "T0=%.1f T1=%.1f T2=%.1f T3=%.1f  "
     "Luft=%.1f°C  Up=%lus\n",
     sd.rpm, d, (unsigned long)pulseGlitches, (unsigned long)rpmRejected,
+    (unsigned long)rpmSpikes,
     sd.rudderAngle, sd.oilPressure/100000.0f,
     isnan(sd.temp[0])?0.0f:sd.temp[0],
     isnan(sd.temp[1])?0.0f:sd.temp[1],
