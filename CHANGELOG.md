@@ -31,6 +31,15 @@ Most recent first.
   Note both boards still send **PGN 127488** (RPM) on instance 0.
 
 ## Stability
+- **WiFi watchdog recovers from router outages** (v2.01): after a router
+  outage on 2026‑07‑21 the WiFi stack hung for 21 h until a manual power
+  cycle — SensESP's auto‑reconnect does not recover from e.g. an AP channel
+  change after a router reboot. A 30‑second watchdog now forces a hard
+  `disconnect()`/`reconnect()` (fresh scan) after 2 min offline, and restarts
+  the device after 15 min offline — but only if WiFi was connected at least
+  once since boot (no reboot loop while the router stays down) and the shaft
+  is stopped (no N2K gap under way). N2K/CAN keeps running throughout; only
+  the Signal K delta path depends on WiFi.
 - **HTTP server no longer hangs after a few days uptime**: SensESP starts the
   ESP‑IDF `httpd` with `HTTPD_DEFAULT_CONFIG()` (`max_open_sockets = 7`,
   `lru_purge_enable = false`). Stale keep‑alive sockets from sleeping/departed

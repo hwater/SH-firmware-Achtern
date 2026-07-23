@@ -1,6 +1,6 @@
 /**
  * ════════════════════════════════════════════════════════════
- *  AchternSensorik  v2.0  –  SensESP Edition
+ *  AchternSensorik  v2.01 –  SensESP Edition
  *  Marine Wellendrehzahl & Richtungserkennung für ESP32
  * ════════════════════════════════════════════════════════════
  *
@@ -1096,7 +1096,7 @@ Promise.all([
 void setup() {
   Serial.begin(115200);
   delay(100);
-  Serial.println(F("\n=== AchternSensorik v2.0 – SensESP ==="));
+  Serial.println(F("\n=== AchternSensorik v2.01 – SensESP ==="));
 
   // ── I2C ─────────────────────────────────────────────────
   Wire.begin(BME_SDA, BME_SCL);
@@ -1107,7 +1107,7 @@ void setup() {
     display.setTextColor(SSD1306_WHITE);
     display.setTextSize(1);
     display.setCursor(14,18); display.print(F("AchternSensorik"));
-    display.setCursor(22,30); display.print(F("SensESP  v2.0"));
+    display.setCursor(22,30); display.print(F("SensESP v2.01"));
     display.setCursor(10,44); display.print(F("AP: " AP_SSID));
     display.display();
     Serial.println(F("OLED: OK"));
@@ -1458,6 +1458,38 @@ void setup() {
       (void)MODULE_CAN->ECC;
       (void)MODULE_CAN->IR.U;
       MODULE_CAN->MOD.B.RM = 0;
+    }
+  });
+
+  // WLAN-Watchdog: Nach einem Router-Aussetzer bleibt der Arduino-WiFi-Stack
+  // gern haengen (z.B. AP-Kanalwechsel nach Router-Neustart); SensESPs
+  // AutoReconnect heilt das nicht (beobachtet 21.07.2026, 21 h offline).
+  // Stufe 1: ab 2 min offline Stack hart neu ansetzen (erzwingt frischen Scan).
+  // Stufe 2: ab 15 min offline Neustart – nur wenn die Welle steht (keine
+  // N2K-Datenluecke unter Fahrt) und WLAN seit Boot schon einmal verbunden
+  // war (sonst Reboot-Schleife, solange der Router laenger aus ist).
+  event_loop()->onRepeat(30000, []() {
+    static uint32_t downSinceMs   = 0;
+    static bool     everConnected = false;
+    if (WiFi.status() == WL_CONNECTED) {
+      if (!everConnected) {
+        WiFi.setAutoReconnect(true);
+        WiFi.persistent(false);   // Reconnects nicht ins NVS schreiben
+      }
+      everConnected = true;
+      downSinceMs   = 0;
+      return;
+    }
+    if (downSinceMs == 0) { downSinceMs = millis(); return; }
+    uint32_t downMin = (millis() - downSinceMs) / 60000UL;
+    if (downMin >= 15 && everConnected && sd.rpm < 1.0f) {
+      Serial.println(F("WLAN-Watchdog: >=15 min offline – Neustart"));
+      ESP.restart();
+    } else if (downMin >= 2) {
+      Serial.printf("WLAN-Watchdog: %lu min offline – erzwinge Reconnect\n",
+                    (unsigned long)downMin);
+      WiFi.disconnect();
+      WiFi.reconnect();
     }
   });
 
