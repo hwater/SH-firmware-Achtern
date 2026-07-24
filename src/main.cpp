@@ -24,10 +24,11 @@
  *    propulsion.0.coolantTemperature   [K]
  *    propulsion.0.exhaustTemperature   [K]   ← DS18B20 T3
  *    steering.rudderAngle              [rad]
- *    environment.outside.temperature   [K]
- *    environment.outside.humidity      [0-1]
- *    environment.outside.pressure      [Pa]
+ *    environment.inside.engineRoom.airTemperature   [K]   ← BME680 (Motorraum-Luft)
+ *    environment.inside.engineRoom.relativeHumidity  [0-1] ← BME680
+ *    environment.inside.engineRoom.gasResistance     [Ω]   ← BME680 (Luftgüte/Gas)
  *    environment.inside.engineRoom.temperature [K]  ← DS18B20 T2
+ *    (Außenluft/Barometer liefert jetzt der Mast-Kompass, nicht mehr achtern)
  *
  *  WiFi AP (SensESP Konfig-Portal):
  *    SSID: AchternSensorik   Pass: siehe secrets.h
@@ -1389,33 +1390,33 @@ void setup() {
   addTemp("/Temp/Maschinenraum", "Maschinenraum Temperatur", "environment.inside.engineRoom.temperature", 320, 2);
   addTemp("/Temp/Abgas",         "Abgas Temperatur",         "propulsion.0.exhaustTemperature",           330, 3);
 
-  // ── BME680: Außenluft Temperatur (K) ─────────────────────
+  // ── BME680: Motorraum-Lufttemperatur (K) ─────────────────
+  // Umgezogen von environment.outside.* → engineRoom (Mast liefert jetzt Außenluft).
+  // Config-Key mitgeändert (/engineRoom/…), sonst überschreibt gespeicherte Config den Pfad.
   auto* airTempSensor = new RepeatSensor<float>(INTERVAL_BME_MS, []() -> float {
     return isnan(sd.airTemp) ? NAN : sd.airTemp + 273.15f;
   });
   airTempSensor->connect_to(new SKOutput<float>(
-      "environment.outside.temperature", "/environment/airTemp"));
+      "environment.inside.engineRoom.airTemperature", "/engineRoom/airTemp"));
 
-  // ── BME680: Luftfeuchtigkeit (0.0–1.0) ───────────────────
+  // ── BME680: Motorraum-Luftfeuchtigkeit (0.0–1.0) ─────────
   auto* humSensor = new RepeatSensor<float>(INTERVAL_BME_MS, []() -> float {
     return isnan(sd.humidity) ? NAN : sd.humidity / 100.0f;
   });
   humSensor->connect_to(new SKOutput<float>(
-      "environment.outside.humidity", "/environment/humidity"));
+      "environment.inside.engineRoom.relativeHumidity", "/engineRoom/humidity"));
 
-  // ── BME680: Luftdruck (Pa) ───────────────────────────────
-  auto* presSensor = new RepeatSensor<float>(INTERVAL_BME_MS, []() -> float {
-    return isnan(sd.pressure) ? NAN : sd.pressure * 100.0f;  // hPa → Pa
-  });
-  presSensor->connect_to(new SKOutput<float>(
-      "environment.outside.pressure", "/environment/pressure"));
+  // ── BME680: Luftdruck — ENTFÄLLT ─────────────────────────
+  // Der Pi hat einen eigenen Baro-Chip (OpenPlotter.I2C.BME280) → der liefert
+  // environment.outside.pressure. achtern hier NICHT mehr publizieren, sonst zwei
+  // Quellen auf einem Pfad (Konflikt). Druck wird lokal weiter gemessen/angezeigt.
 
-  // ── BME680: Gas-Widerstand (Ω) ───────────────────────────
+  // ── BME680: Gas-Widerstand (Ω) → Motorraum-Luftgüte ──────
   auto* gasSensor = new RepeatSensor<float>(INTERVAL_BME_MS, []() -> float {
     return isnan(sd.gasRes) ? NAN : sd.gasRes * 1000.0f;  // kΩ → Ω
   });
   gasSensor->connect_to(new SKOutput<float>(
-      "environment.outside.gasResistance", "/environment/gasResistance"));
+      "environment.inside.engineRoom.gasResistance", "/engineRoom/gasResistance"));
 
   // ════════════════════════════════════════════════════════
   //  EVENT-LOOP TIMER (periodische Hintergrundaufgaben)

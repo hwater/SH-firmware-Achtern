@@ -5,6 +5,15 @@ speed/direction plus engine and environment sensors, over NMEA 2000 and Signal K
 Most recent first.
 
 ## Sensors & configuration
+- **BME680 repurposed from "outside" to engine‑room monitoring** (2026‑07‑24):
+  the aft‑below BME680 was mislabelled `environment.outside.*` although it sits below
+  deck. Air temp/humidity/gas now go to `environment.inside.engineRoom.airTemperature`
+  / `.relativeHumidity` / `.gasResistance` (Motorraum‑/Schmorgummi‑Überwachung; config
+  keys changed to `/engineRoom/*` so saved config doesn't override the new paths).
+  **Barometer dropped here** — the Pi already has its own baro chip
+  (`OpenPlotter.I2C.BME280`) owning `environment.outside.pressure`; two sources on one
+  path was a conflict. Pressure is still measured/shown locally on the OLED. True
+  outside air/temperature will come from the mast‑compass.
 - **DS18B20 temperatures via SensESP `OneWireTemperature`** (`d06b222`): each of
   the four sensors (Kühlwasser, Öl, Maschinenraum, Abgas) is assigned by its
   **1‑Wire address** in the web UI, with a **Linear calibration** and **SK path** —
