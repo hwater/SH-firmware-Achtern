@@ -1465,32 +1465,60 @@ void setup() {
   // WLAN-Watchdog: Nach einem Router-Aussetzer bleibt der Arduino-WiFi-Stack
   // gern haengen (z.B. AP-Kanalwechsel nach Router-Neustart); SensESPs
   // AutoReconnect heilt das nicht (beobachtet 21.07.2026, 21 h offline).
-  // Stufe 1: ab 2 min offline Stack hart neu ansetzen (erzwingt frischen Scan).
-  // Stufe 2: ab 15 min offline Neustart – nur wenn die Welle steht (keine
-  // N2K-Datenluecke unter Fahrt) und WLAN seit Boot schon einmal verbunden
-  // war (sonst Reboot-Schleife, solange der Router laenger aus ist).
+  // Sanft vor hart, dreistufig:
+  //  SK-Stufe: WLAN da, aber SK-WebSocket getrennt → ws->restart()+connect().
+  //    Raeumt einen in "Connecting" haengenden Client ab und umgeht SensESPs
+  //    Backoff (2s→60s). KEIN Reboot – haette bei Server-seitigem Ausfall keinen
+  //    Sinn, und restart() loest einen ESP-seitigen Haenger ohnehin auf.
+  //    (Beobachtet 25.07.2026: bei der Rueckfahrt brach der WLAN-Delta-Weg ab,
+  //     waehrend CAN weiterlief – diese Stufe faengt genau das ab.)
+  //  WLAN-Stufe 1: ab 2 min ohne WLAN Stack hart neu ansetzen (frischer Scan).
+  //  WLAN-Stufe 2: ab 15 min ohne WLAN Neustart – nur wenn die Welle steht
+  //    (keine N2K-Luecke unter Fahrt) und WLAN seit Boot schon mal verbunden war.
   event_loop()->onRepeat(30000, []() {
-    static uint32_t downSinceMs   = 0;
+    static uint32_t downSinceMs   = 0;   // WLAN weg seit
+    static uint32_t skDownSinceMs = 0;   // SK-WS getrennt (WLAN aber da) seit
     static bool     everConnected = false;
-    if (WiFi.status() == WL_CONNECTED) {
+
+    bool wifiUp = (WiFi.status() == WL_CONNECTED);
+    auto ws = sensesp_app ? sensesp_app->get_ws_client() : nullptr;
+    bool skUp = ws && ws->is_connected();
+
+    if (wifiUp && skUp) {                 // alles gesund
       if (!everConnected) {
         WiFi.setAutoReconnect(true);
-        WiFi.persistent(false);   // Reconnects nicht ins NVS schreiben
+        WiFi.persistent(false);           // Reconnects nicht ins NVS schreiben
       }
       everConnected = true;
-      downSinceMs   = 0;
+      downSinceMs = 0; skDownSinceMs = 0;
       return;
     }
-    if (downSinceMs == 0) { downSinceMs = millis(); return; }
-    uint32_t downMin = (millis() - downSinceMs) / 60000UL;
-    if (downMin >= 15 && everConnected && sd.rpm < 1.0f) {
-      Serial.println(F("WLAN-Watchdog: >=15 min offline – Neustart"));
-      ESP.restart();
-    } else if (downMin >= 2) {
-      Serial.printf("WLAN-Watchdog: %lu min offline – erzwinge Reconnect\n",
-                    (unsigned long)downMin);
-      WiFi.disconnect();
-      WiFi.reconnect();
+
+    if (!wifiUp) {                        // --- WLAN weg ---
+      skDownSinceMs = 0;
+      if (downSinceMs == 0) { downSinceMs = millis(); return; }
+      uint32_t downMin = (millis() - downSinceMs) / 60000UL;
+      if (downMin >= 15 && everConnected && sd.rpm < 1.0f) {
+        Serial.println(F("WLAN-Watchdog: >=15 min offline – Neustart"));
+        ESP.restart();
+      } else if (downMin >= 2) {
+        Serial.printf("WLAN-Watchdog: %lu min offline – erzwinge Reconnect\n",
+                      (unsigned long)downMin);
+        WiFi.disconnect();
+        WiFi.reconnect();
+      }
+      return;
+    }
+
+    // --- WLAN da, aber SK-WebSocket getrennt: sanft neu aufbauen (kein Reboot) ---
+    downSinceMs = 0;
+    if (!everConnected) { skDownSinceMs = 0; return; }  // Erstverbindung nicht stoeren
+    if (skDownSinceMs == 0) { skDownSinceMs = millis(); return; }  // 1 Zyklus Gnade
+    if (ws) {
+      Serial.printf("SK-Watchdog: WS %lus getrennt (WLAN ok) – SK-Reconnect\n",
+                    (unsigned long)((millis() - skDownSinceMs) / 1000UL));
+      ws->restart();     // haengenden Client abreissen → State Disconnected
+      ws->connect();     // sofortiger Neuversuch, umgeht Backoff-Wartezeit
     }
   });
 
