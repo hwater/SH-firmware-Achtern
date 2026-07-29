@@ -156,6 +156,17 @@ using namespace sensesp::onewire;
 #define N2K_ENGINE_INST 1
 #define N2K_RUDDER_INST 0
 
+// ── Wellenlager-Temperatur über CAN (PGN 130316) ─────────
+// Der Achtern-Sensor misst die Welle. Ein DS18B20 sitzt am Wellenlager; er haengt
+// am Config-Slot /Temp/Maschinenraum → sd.temp[SHAFT_TEMP_IDX], per Web-UI auf den
+// SK-Pfad environment.inside.wellenlager.temperature gelegt und "Wellenlager"
+// benannt (nach Fahrt der heisseste Fuehler). Zusaetzlich zum WiFi-SK-Pfad wird er
+// als NMEA2000 Temperatur-PGN 130316 mit Quelle ShaftSeal gesendet, damit die
+// Wellentemperatur auch bei WLAN-Aussetzern auf dem Bus verfuegbar bleibt — analog
+// zur Wellendrehzahl (siehe Memory esp32-wifi-hang-after-ap-outage).
+#define SHAFT_TEMP_IDX       2   // sd.temp[]-Index des Wellenlager-Fuehlers
+#define N2K_SHAFT_TEMP_INST  1   // Temperatur-Instanz fuer PGN 130316
+
 // ════════════════════════════════════════════════════════════
 //  GLOBALE VARIABLEN
 // ════════════════════════════════════════════════════════════
@@ -254,7 +265,7 @@ static StatusPageItem<uint8_t>*  g_st_n2k_addr  = nullptr;
 
 // ── NMEA2000 PGN-Liste ───────────────────────────────────
 const unsigned long TransmitMessages[] PROGMEM = {
-  127488L, 127245L, 127489L, 0
+  127488L, 127245L, 127489L, 130316L, 0
 };
 
 // SensESP 3.x: sensesp_app wird von get_app() gesetzt (kein eigenes ReactESP nötig)
@@ -571,6 +582,16 @@ void sendNMEA2000() {
     tN2kEngineDiscreteStatus1(0), tN2kEngineDiscreteStatus2(0));
   if (nmea2000->SendMsg(msg)) { canTxPkts++; cycleOk = true; }
   else                        { canErrPkts++;               }
+
+  // Wellenlager-Temperatur (PGN 130316, Quelle ShaftSeal). Nur senden, wenn der
+  // Fuehler einen gueltigen Wert liefert (temp3/Abgas ist z.B. haeufig NaN).
+  if (!isnan(sd.temp[SHAFT_TEMP_IDX])) {
+    SetN2kTemperatureExt(msg, 0xFF, N2K_SHAFT_TEMP_INST,
+                         N2kts_ShaftSealTemperature,
+                         (double)(sd.temp[SHAFT_TEMP_IDX] + 273.15f), N2kDoubleNA);
+    if (nmea2000->SendMsg(msg)) { canTxPkts++; cycleOk = true; }
+    else                        { canErrPkts++;               }
+  }
 
   canBusOk = cycleOk;
 
