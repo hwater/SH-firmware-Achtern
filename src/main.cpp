@@ -59,6 +59,7 @@
 //  SENSESP – Framework Includes
 // ════════════════════════════════════════════════════════════
 #include "sensesp_app_builder.h"
+#include "ws_reboot_watchdog.h"
 #include "sensesp/sensors/sensor.h"
 #include "sensesp/signalk/signalk_output.h"
 #include "sensesp/transforms/lambda_transform.h"
@@ -1074,6 +1075,10 @@ void setup() {
   sensesp_app = (&builder)
     ->set_wifi_access_point(AP_SSID, AP_PASS)
     ->get_app();
+
+  // Neustart, wenn der Signal-K-WebSocket dauerhaft tot bleibt — auch dann,
+  // wenn der WLAN-Stack "verbunden" behauptet. Siehe ws_reboot_watchdog.h.
+  start_ws_reboot_watchdog();
 
   // Erstboot-Default: nur setzen, wenn noch der SensESP-Default ("SensESP")
   // greift – dann wird unser Wunsch-Default einmalig persistiert.
