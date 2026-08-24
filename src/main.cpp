@@ -1,6 +1,6 @@
 /**
  * ════════════════════════════════════════════════════════════
- *  AchternSensorik  v2.0  –  SensESP Edition
+ *  AchternSensorik  v2.01 –  SensESP Edition
  *  Marine Wellendrehzahl & Richtungserkennung für ESP32
  * ════════════════════════════════════════════════════════════
  *
@@ -24,10 +24,11 @@
  *    propulsion.0.coolantTemperature   [K]
  *    propulsion.0.exhaustTemperature   [K]   ← DS18B20 T3
  *    steering.rudderAngle              [rad]
- *    environment.outside.temperature   [K]
- *    environment.outside.humidity      [0-1]
- *    environment.outside.pressure      [Pa]
+ *    environment.inside.engineRoom.airTemperature   [K]   ← BME680 (Motorraum-Luft)
+ *    environment.inside.engineRoom.relativeHumidity  [0-1] ← BME680
+ *    environment.inside.engineRoom.gasResistance     [Ω]   ← BME680 (Luftgüte/Gas)
  *    environment.inside.engineRoom.temperature [K]  ← DS18B20 T2
+ *    (Außenluft/Barometer liefert jetzt der Mast-Kompass, nicht mehr achtern)
  *
  *  WiFi AP (SensESP Konfig-Portal):
  *    SSID: AchternSensorik   Pass: siehe secrets.h
@@ -145,9 +146,27 @@ using namespace sensesp::onewire;
 // ── Drehrichtungs-Toleranz ───────────────────────────────
 #define DIR_TOLERANCE   0.25f
 
+// ── Spitzenfilter: ab welchem Faktor ein Sprung erst bestaetigt werden muss ──
+#define RPM_JUMP_FACTOR 1.5f
+
 // ── NMEA2000 ─────────────────────────────────────────────
-#define N2K_ENGINE_INST 0
+// Engine instance 1 (Signal K: propulsion.starboard). Instance 0 belongs to the
+// Perkins engine monitor, which measures the engine itself — this board only
+// sees the propeller shaft, and the gearbox ratio makes its RPM a different
+// number. Sharing an instance made the two overwrite each other's PGN 127488.
+#define N2K_ENGINE_INST 1
 #define N2K_RUDDER_INST 0
+
+// ── Wellenlager-Temperatur über CAN (PGN 130316) ─────────
+// Der Achtern-Sensor misst die Welle. Ein DS18B20 sitzt am Wellenlager; er haengt
+// am Config-Slot /Temp/Maschinenraum → sd.temp[SHAFT_TEMP_IDX], per Web-UI auf den
+// SK-Pfad environment.inside.wellenlager.temperature gelegt und "Wellenlager"
+// benannt (nach Fahrt der heisseste Fuehler). Zusaetzlich zum WiFi-SK-Pfad wird er
+// als NMEA2000 Temperatur-PGN 130316 mit Quelle ShaftSeal gesendet, damit die
+// Wellentemperatur auch bei WLAN-Aussetzern auf dem Bus verfuegbar bleibt — analog
+// zur Wellendrehzahl (siehe Memory esp32-wifi-hang-after-ap-outage).
+#define SHAFT_TEMP_IDX       2   // sd.temp[]-Index des Wellenlager-Fuehlers
+#define N2K_SHAFT_TEMP_INST  1   // Temperatur-Instanz fuer PGN 130316
 
 // ════════════════════════════════════════════════════════════
 //  GLOBALE VARIABLEN
@@ -159,9 +178,35 @@ volatile uint32_t pulseBuf[PULSE_BUF] = {0};
 volatile uint8_t  pulseBufHead        = 0;
 volatile uint32_t pulseCount          = 0;
 volatile uint32_t lastPulseMs         = 0;
+volatile uint32_t pulseGlitches       = 0;  // vom Glitch-Filter verworfene Flanken
+uint32_t          rpmRejected         = 0;  // wg. Geometrie verworfene RPM-Messfenster
+uint32_t          rpmSpikes           = 0;  // unbestaetigte Ausreisser (Spitzenfilter)
+static float      rpmPending          = 0.0f;  // wartet auf Bestaetigung
 
+// Glitch-Filter: Die Welle hat 3 ungleich verteilte Magnete (44/77/220 mm),
+// der kleinste echte Pulsabstand ist ~1/7.75 (≈12.9 %) einer Umdrehung.
+// Rauschen/Prellen am Hall-Ausgang nahe der Schaltschwelle kann Zusatzflanken
+// erzeugen; die verkuerzen das 4-Zeitstempel-Fenster und lassen die berechnete
+// RPM auf ~das Doppelte springen. Deshalb Flanken verwerfen, die naeher als 5 %
+// der letzten Umdrehungsdauer (revSpan/20) an der vorigen liegen — deutlich
+// unter den 12.9 % echtem Minimum, mit Reserve auch bei starker Beschleunigung
+// (selbst bei Verdopplung der Drehzahl pro Umdrehung bleibt ~6.5 % > 5 %).
+// Zusaetzlich ein absoluter Boden von 300 µs (greift erst jenseits ~25000 RPM,
+// stoert also echte Pulse nie) als Schutz gegen Muell-Zeitstempel beim Start.
 void IRAM_ATTR hallISR() {
-  pulseBuf[pulseBufHead] = micros();
+  uint32_t now  = micros();
+  uint8_t  head = pulseBufHead;
+  uint32_t prev = pulseBuf[(head + PULSE_BUF - 1) % PULSE_BUF];  // letzter Zeitstempel
+  if (pulseCount >= PULSE_BUF) {
+    uint32_t revSpan  = prev - pulseBuf[head];  // Spanne der letzten 3 Abstaende ≈ 1 Umdrehung
+    uint32_t minGap   = revSpan / 20;           // 5 % einer Umdrehung
+    if (minGap < 300) minGap = 300;             // absoluter Boden (µs)
+    if ((uint32_t)(now - prev) < minGap) {      // unplausibel kurz → Glitch
+      pulseGlitches++;
+      return;
+    }
+  }
+  pulseBuf[pulseBufHead] = now;
   pulseBufHead = (pulseBufHead + 1) % PULSE_BUF;
   pulseCount++;
   lastPulseMs = millis();
@@ -221,7 +266,7 @@ static StatusPageItem<uint8_t>*  g_st_n2k_addr  = nullptr;
 
 // ── NMEA2000 PGN-Liste ───────────────────────────────────
 const unsigned long TransmitMessages[] PROGMEM = {
-  127488L, 127245L, 127489L, 0
+  127488L, 127245L, 127489L, 130316L, 0
 };
 
 // SensESP 3.x: sensesp_app wird von get_app() gesetzt (kein eigenes ReactESP nötig)
@@ -271,6 +316,7 @@ void calcRPMandDirection() {
     sd.rpm       = 0.0f;
     sd.direction = 0;
     sd.shaftValid = false;
+    rpmPending   = 0.0f;
     return;
   }
 
@@ -285,9 +331,6 @@ void calcRPMandDirection() {
   float dt1 = (float)(t[2] - t[1]);
   float dt2 = (float)(t[3] - t[2]);
   if (dt0 <= 0 || dt1 <= 0 || dt2 <= 0) return;
-
-  // RPM: eine vollständige Umdrehung = alle 3 Abstände
-  sd.rpm = 60000000.0f / (dt0 + dt1 + dt2);
 
   // Normierung auf kleinsten Abstand → Verhältnisse
   float dtMin = min({dt0, dt1, dt2});
@@ -304,9 +347,52 @@ void calcRPMandDirection() {
                (approx(r0,1.75f) && approx(r1,1.00f) && approx(r2,5.00f)) ||
                (approx(r0,1.00f) && approx(r1,5.00f) && approx(r2,1.75f));
 
-  if      (isCW)  { sd.direction = +1; sd.shaftValid = true; }
-  else if (isCCW) { sd.direction = -1; sd.shaftValid = true; }
-  else            { sd.shaftValid = true; }  // Richtung Hysterese
+  // ── Plausibilitaetspruefung (Geometrie) ────────────────────────────────
+  // Die 3 Abstaende MUESSEN eine zyklische Permutation des Magnetmusters
+  // 1.00/1.75/5.00 sein — nur dann ueberspannt das Fenster exakt eine
+  // Umdrehung und 60e6/(dt0+dt1+dt2) ist die echte Drehzahl.
+  // Rutscht ein Stoerpuls durch den ISR-Glitch-Filter (weil er nicht eng
+  // genug am echten Puls liegt), deckt das Fenster nur einen Bruchteil einer
+  // Umdrehung ab und die RPM liest deutlich zu hoch — in den Influx-Daten als
+  // gequantelte Ausreisser auf ~2.4x/2.7x/3.2x der echten Drehzahl sichtbar
+  // (890 -> 2125/2425/2810). Solche Fenster passen nie auf 1.00/1.75/5.00,
+  // also Messung verwerfen statt einen falschen Wert auszugeben.
+  if (!isCW && !isCCW) {
+    rpmRejected++;
+    sd.shaftValid = false;
+    return;  // sd.rpm und sd.direction behalten den letzten gueltigen Wert
+  }
+
+  float cand = 60000000.0f / (dt0 + dt1 + dt2);
+
+  // ── Spitzenfilter (Bestaetigung) ───────────────────────────────────────
+  // Restliche Stoerfenster (in den Influx-Daten die Familie ~2827 = 3.18x der
+  // echten 889 RPM) erfuellen das 1.00/1.75/5.00-Muster zufaellig in
+  // verkleinertem Massstab und passieren die Geometriepruefung. Sie treten
+  // aber immer als EINZELNE Spitze auf (890 -> 2827 -> 888), waehrend die
+  // Welle wegen ihrer Traegheit gar nicht so springen kann.
+  // Deshalb: einen grossen Sprung — und ebenso den allerersten Wert nach
+  // Boot/Stillstand, damit ein Ausreisser direkt nach dem Reset nicht
+  // durchrutscht — erst uebernehmen, wenn die naechste Messung ihn bestaetigt.
+  // Echte schnelle Aenderungen kommen so mit einer Messung (0.5 s) Verzug durch.
+  bool haveRef  = (sd.rpm > 20.0f);
+  bool bigJump  = haveRef && (cand > sd.rpm * RPM_JUMP_FACTOR ||
+                              cand * RPM_JUMP_FACTOR < sd.rpm);
+  if (bigJump || !haveRef) {
+    bool confirmed = (rpmPending > 0.0f) &&
+                     (fabsf(cand - rpmPending) <= rpmPending * 0.25f);
+    if (!confirmed) {
+      rpmPending = cand;   // merken und auf Bestaetigung warten
+      if (haveRef) rpmSpikes++;
+      sd.shaftValid = false;
+      return;              // sd.rpm/sd.direction bleiben unveraendert
+    }
+  }
+  rpmPending = 0.0f;
+
+  sd.rpm        = cand;
+  sd.direction  = isCW ? +1 : -1;
+  sd.shaftValid = true;
 
   // Optional: Vorwaerts/Rueckwaerts vertauschen (Web-UI Flag "Richtung umdrehen").
   if (g_dir_cfg && g_dir_cfg->invert) sd.direction = -sd.direction;
@@ -485,14 +571,28 @@ void sendNMEA2000() {
 
   double coolantK = isnan(sd.temp[0]) ? N2kDoubleNA : (double)(sd.temp[0] + 273.15f);
   double oilTempK = isnan(sd.temp[1]) ? N2kDoubleNA : (double)(sd.temp[1] + 273.15f);
+  // Engine hours: NA. This board has no hour meter — it used to report its own
+  // uptime here, which collided with the Perkins monitor's real hour meter on
+  // the same engine instance and won on the bus. The Perkins board is the sole
+  // authority for PGN 127489 engine hours.
   SetN2kEngineDynamicParam(msg, N2K_ENGINE_INST,
     (double)sd.oilPressure, oilTempK, coolantK,
     N2kDoubleNA, N2kDoubleNA,
-    (double)millis() / 1000.0,
+    N2kDoubleNA,
     N2kDoubleNA, N2kDoubleNA, N2kInt8NA, N2kInt8NA,
     tN2kEngineDiscreteStatus1(0), tN2kEngineDiscreteStatus2(0));
   if (nmea2000->SendMsg(msg)) { canTxPkts++; cycleOk = true; }
   else                        { canErrPkts++;               }
+
+  // Wellenlager-Temperatur (PGN 130316, Quelle ShaftSeal). Nur senden, wenn der
+  // Fuehler einen gueltigen Wert liefert (temp3/Abgas ist z.B. haeufig NaN).
+  if (!isnan(sd.temp[SHAFT_TEMP_IDX])) {
+    SetN2kTemperatureExt(msg, 0xFF, N2K_SHAFT_TEMP_INST,
+                         N2kts_ShaftSealTemperature,
+                         (double)(sd.temp[SHAFT_TEMP_IDX] + 273.15f), N2kDoubleNA);
+    if (nmea2000->SendMsg(msg)) { canTxPkts++; cycleOk = true; }
+    else                        { canErrPkts++;               }
+  }
 
   canBusOk = cycleOk;
 
@@ -601,10 +701,12 @@ void printSerial() {
   const char* d = (sd.direction>0) ? "CW/Vorwaerts" :
                   (sd.direction<0) ? "CCW/Rueckwaerts" : "STILLSTAND";
   Serial.printf(
-    "RPM=%.1f  Dir=%s  Ruder=%.1f°  Oel=%.2fbar "
+    "RPM=%.1f  Dir=%s  Glitch=%lu  Rej=%lu  Spike=%lu  Ruder=%.1f°  Oel=%.2fbar "
     "T0=%.1f T1=%.1f T2=%.1f T3=%.1f  "
     "Luft=%.1f°C  Up=%lus\n",
-    sd.rpm, d, sd.rudderAngle, sd.oilPressure/100000.0f,
+    sd.rpm, d, (unsigned long)pulseGlitches, (unsigned long)rpmRejected,
+    (unsigned long)rpmSpikes,
+    sd.rudderAngle, sd.oilPressure/100000.0f,
     isnan(sd.temp[0])?0.0f:sd.temp[0],
     isnan(sd.temp[1])?0.0f:sd.temp[1],
     isnan(sd.temp[2])?0.0f:sd.temp[2],
@@ -1017,7 +1119,7 @@ Promise.all([
 void setup() {
   Serial.begin(115200);
   delay(100);
-  Serial.println(F("\n=== AchternSensorik v2.0 – SensESP ==="));
+  Serial.println(F("\n=== AchternSensorik v2.01 – SensESP ==="));
 
   // ── I2C ─────────────────────────────────────────────────
   Wire.begin(BME_SDA, BME_SCL);
@@ -1028,7 +1130,7 @@ void setup() {
     display.setTextColor(SSD1306_WHITE);
     display.setTextSize(1);
     display.setCursor(14,18); display.print(F("AchternSensorik"));
-    display.setCursor(22,30); display.print(F("SensESP  v2.0"));
+    display.setCursor(22,30); display.print(F("SensESP v2.01"));
     display.setCursor(10,44); display.print(F("AP: " AP_SSID));
     display.display();
     Serial.println(F("OLED: OK"));
@@ -1314,33 +1416,33 @@ void setup() {
   addTemp("/Temp/Maschinenraum", "Maschinenraum Temperatur", "environment.inside.engineRoom.temperature", 320, 2);
   addTemp("/Temp/Abgas",         "Abgas Temperatur",         "propulsion.0.exhaustTemperature",           330, 3);
 
-  // ── BME680: Außenluft Temperatur (K) ─────────────────────
+  // ── BME680: Motorraum-Lufttemperatur (K) ─────────────────
+  // Umgezogen von environment.outside.* → engineRoom (Mast liefert jetzt Außenluft).
+  // Config-Key mitgeändert (/engineRoom/…), sonst überschreibt gespeicherte Config den Pfad.
   auto* airTempSensor = new RepeatSensor<float>(INTERVAL_BME_MS, []() -> float {
     return isnan(sd.airTemp) ? NAN : sd.airTemp + 273.15f;
   });
   airTempSensor->connect_to(new SKOutput<float>(
-      "environment.outside.temperature", "/environment/airTemp"));
+      "environment.inside.engineRoom.airTemperature", "/engineRoom/airTemp"));
 
-  // ── BME680: Luftfeuchtigkeit (0.0–1.0) ───────────────────
+  // ── BME680: Motorraum-Luftfeuchtigkeit (0.0–1.0) ─────────
   auto* humSensor = new RepeatSensor<float>(INTERVAL_BME_MS, []() -> float {
     return isnan(sd.humidity) ? NAN : sd.humidity / 100.0f;
   });
   humSensor->connect_to(new SKOutput<float>(
-      "environment.outside.humidity", "/environment/humidity"));
+      "environment.inside.engineRoom.relativeHumidity", "/engineRoom/humidity"));
 
-  // ── BME680: Luftdruck (Pa) ───────────────────────────────
-  auto* presSensor = new RepeatSensor<float>(INTERVAL_BME_MS, []() -> float {
-    return isnan(sd.pressure) ? NAN : sd.pressure * 100.0f;  // hPa → Pa
-  });
-  presSensor->connect_to(new SKOutput<float>(
-      "environment.outside.pressure", "/environment/pressure"));
+  // ── BME680: Luftdruck — ENTFÄLLT ─────────────────────────
+  // Der Pi hat einen eigenen Baro-Chip (OpenPlotter.I2C.BME280) → der liefert
+  // environment.outside.pressure. achtern hier NICHT mehr publizieren, sonst zwei
+  // Quellen auf einem Pfad (Konflikt). Druck wird lokal weiter gemessen/angezeigt.
 
-  // ── BME680: Gas-Widerstand (Ω) ───────────────────────────
+  // ── BME680: Gas-Widerstand (Ω) → Motorraum-Luftgüte ──────
   auto* gasSensor = new RepeatSensor<float>(INTERVAL_BME_MS, []() -> float {
     return isnan(sd.gasRes) ? NAN : sd.gasRes * 1000.0f;  // kΩ → Ω
   });
   gasSensor->connect_to(new SKOutput<float>(
-      "environment.outside.gasResistance", "/environment/gasResistance"));
+      "environment.inside.engineRoom.gasResistance", "/engineRoom/gasResistance"));
 
   // ════════════════════════════════════════════════════════
   //  EVENT-LOOP TIMER (periodische Hintergrundaufgaben)
@@ -1383,6 +1485,66 @@ void setup() {
       (void)MODULE_CAN->ECC;
       (void)MODULE_CAN->IR.U;
       MODULE_CAN->MOD.B.RM = 0;
+    }
+  });
+
+  // WLAN-Watchdog: Nach einem Router-Aussetzer bleibt der Arduino-WiFi-Stack
+  // gern haengen (z.B. AP-Kanalwechsel nach Router-Neustart); SensESPs
+  // AutoReconnect heilt das nicht (beobachtet 21.07.2026, 21 h offline).
+  // Sanft vor hart, dreistufig:
+  //  SK-Stufe: WLAN da, aber SK-WebSocket getrennt → ws->restart()+connect().
+  //    Raeumt einen in "Connecting" haengenden Client ab und umgeht SensESPs
+  //    Backoff (2s→60s). KEIN Reboot – haette bei Server-seitigem Ausfall keinen
+  //    Sinn, und restart() loest einen ESP-seitigen Haenger ohnehin auf.
+  //    (Beobachtet 25.07.2026: bei der Rueckfahrt brach der WLAN-Delta-Weg ab,
+  //     waehrend CAN weiterlief – diese Stufe faengt genau das ab.)
+  //  WLAN-Stufe 1: ab 2 min ohne WLAN Stack hart neu ansetzen (frischer Scan).
+  //  WLAN-Stufe 2: ab 15 min ohne WLAN Neustart – nur wenn die Welle steht
+  //    (keine N2K-Luecke unter Fahrt) und WLAN seit Boot schon mal verbunden war.
+  event_loop()->onRepeat(30000, []() {
+    static uint32_t downSinceMs   = 0;   // WLAN weg seit
+    static uint32_t skDownSinceMs = 0;   // SK-WS getrennt (WLAN aber da) seit
+    static bool     everConnected = false;
+
+    bool wifiUp = (WiFi.status() == WL_CONNECTED);
+    auto ws = sensesp_app ? sensesp_app->get_ws_client() : nullptr;
+    bool skUp = ws && ws->is_connected();
+
+    if (wifiUp && skUp) {                 // alles gesund
+      if (!everConnected) {
+        WiFi.setAutoReconnect(true);
+        WiFi.persistent(false);           // Reconnects nicht ins NVS schreiben
+      }
+      everConnected = true;
+      downSinceMs = 0; skDownSinceMs = 0;
+      return;
+    }
+
+    if (!wifiUp) {                        // --- WLAN weg ---
+      skDownSinceMs = 0;
+      if (downSinceMs == 0) { downSinceMs = millis(); return; }
+      uint32_t downMin = (millis() - downSinceMs) / 60000UL;
+      if (downMin >= 15 && everConnected && sd.rpm < 1.0f) {
+        Serial.println(F("WLAN-Watchdog: >=15 min offline – Neustart"));
+        ESP.restart();
+      } else if (downMin >= 2) {
+        Serial.printf("WLAN-Watchdog: %lu min offline – erzwinge Reconnect\n",
+                      (unsigned long)downMin);
+        WiFi.disconnect();
+        WiFi.reconnect();
+      }
+      return;
+    }
+
+    // --- WLAN da, aber SK-WebSocket getrennt: sanft neu aufbauen (kein Reboot) ---
+    downSinceMs = 0;
+    if (!everConnected) { skDownSinceMs = 0; return; }  // Erstverbindung nicht stoeren
+    if (skDownSinceMs == 0) { skDownSinceMs = millis(); return; }  // 1 Zyklus Gnade
+    if (ws) {
+      Serial.printf("SK-Watchdog: WS %lus getrennt (WLAN ok) – SK-Reconnect\n",
+                    (unsigned long)((millis() - skDownSinceMs) / 1000UL));
+      ws->restart();     // haengenden Client abreissen → State Disconnected
+      ws->connect();     // sofortiger Neuversuch, umgeht Backoff-Wartezeit
     }
   });
 

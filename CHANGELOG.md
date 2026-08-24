@@ -5,6 +5,15 @@ speed/direction plus engine and environment sensors, over NMEA 2000 and Signal K
 Most recent first.
 
 ## Sensors & configuration
+- **BME680 repurposed from "outside" to engine‑room monitoring** (2026‑07‑24):
+  the aft‑below BME680 was mislabelled `environment.outside.*` although it sits below
+  deck. Air temp/humidity/gas now go to `environment.inside.engineRoom.airTemperature`
+  / `.relativeHumidity` / `.gasResistance` (Motorraum‑/Schmorgummi‑Überwachung; config
+  keys changed to `/engineRoom/*` so saved config doesn't override the new paths).
+  **Barometer dropped here** — the Pi already has its own baro chip
+  (`OpenPlotter.I2C.BME280`) owning `environment.outside.pressure`; two sources on one
+  path was a conflict. Pressure is still measured/shown locally on the OLED. True
+  outside air/temperature will come from the mast‑compass.
 - **DS18B20 temperatures via SensESP `OneWireTemperature`** (`d06b222`): each of
   the four sensors (Kühlwasser, Öl, Maschinenraum, Abgas) is assigned by its
   **1‑Wire address** in the web UI, with a **Linear calibration** and **SK path** —
@@ -13,7 +22,33 @@ Most recent first.
 - **Shaft‑direction invert flag** ("Richtung umdrehen") on the Configuration
   page, for sensors mounted the other way around. (`b9df9f7`)
 
+## NMEA 2000
+- **Moved to engine instance 1** (Signal K `propulsion.starboard`): instance 0
+  was shared with the Perkins engine monitor, so both boards' PGN 127488
+  overwrote each other as "Engine 0 RPM" — and they are not the same number,
+  since this board reads the propeller shaft and the Perkins board reads the
+  engine (alternator W terminal), separated by the gearbox ratio. Instance 0
+  now belongs to the Perkins monitor alone, keeping the actual engine on
+  `propulsion.port` where displays expect it.
+- **Stopped reporting this board's uptime as engine hours** (`dd8a3d3`): the
+  engine‑hours field of **PGN 127489** carried `millis()/1000`. Because this
+  board shares **engine instance 0** with the Perkins engine monitor, Signal K
+  picked that uptime over the Perkins board's real hour meter —
+  `propulsion.port.runTime` read 96.2 h (this board's uptime) instead of the
+  engine's 1445.7 h. This board has no hour meter, so the field is now
+  `N2kDoubleNA` and the Perkins monitor is the sole authority for engine hours.
+  Note both boards still send **PGN 127488** (RPM) on instance 0.
+
 ## Stability
+- **WiFi watchdog recovers from router outages** (v2.01): after a router
+  outage on 2026‑07‑21 the WiFi stack hung for 21 h until a manual power
+  cycle — SensESP's auto‑reconnect does not recover from e.g. an AP channel
+  change after a router reboot. A 30‑second watchdog now forces a hard
+  `disconnect()`/`reconnect()` (fresh scan) after 2 min offline, and restarts
+  the device after 15 min offline — but only if WiFi was connected at least
+  once since boot (no reboot loop while the router stays down) and the shaft
+  is stopped (no N2K gap under way). N2K/CAN keeps running throughout; only
+  the Signal K delta path depends on WiFi.
 - **HTTP server no longer hangs after a few days uptime**: SensESP starts the
   ESP‑IDF `httpd` with `HTTPD_DEFAULT_CONFIG()` (`max_open_sockets = 7`,
   `lru_purge_enable = false`). Stale keep‑alive sockets from sleeping/departed
