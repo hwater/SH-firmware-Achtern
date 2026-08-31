@@ -734,6 +734,14 @@ static String jsEsc(const String& s) {
 // Signal-K WebSocket-Client Verbindungsstatus als kurzer Anzeige-String.
 // get_connection_state() ist protected, daher das public get_connection_status()
 // (liefert englische Strings) nutzen und ins Deutsche uebersetzen.
+// Eine Stelle fuer die Richtungsbenennung. sd.direction ist bereits fertig
+// korrigiert (die invert-Option wirkt davor), also gilt schlicht: +1 voraus.
+// Web-UI, OLED, Serial und Signal K muessen hier dasselbe sagen — sie liefen
+// frueher auseinander, Signal K meldete "astern" fuer Vorausfahrt.
+static const char* dirWord(int8_t d) {
+  return d > 0 ? "ahead" : d < 0 ? "astern" : "stopped";
+}
+
 static const char* skStatusStr() {
   if (!sensesp_app) return "n/a";
   auto ws = sensesp_app->get_ws_client();
@@ -756,7 +764,7 @@ String buildJsonData() {
   String n1 = g_temp_cfg ? jsEsc(g_temp_cfg->names[1]) : "T1";
   String n2 = g_temp_cfg ? jsEsc(g_temp_cfg->names[2]) : "T2";
   String n3 = g_temp_cfg ? jsEsc(g_temp_cfg->names[3]) : "T3";
-  const char* dStr = sd.direction>0?"ahead":sd.direction<0?"astern":"stopped";
+  const char* dStr = dirWord(sd.direction);
   String hn = jsEsc(SensESPBaseApp::get_hostname());
   snprintf(buf, sizeof(buf),
     "{\"hostname\":\"%s\",\"rpm\":%.2f,\"direction\":\"%s\",\"dirNum\":%d,"
@@ -1363,9 +1371,7 @@ void setup() {
   dirSensor
     ->connect_to(new LambdaTransform<float,String>(
         [](float d) -> String {
-          if (d > 0.5f) return "astern";
-          if (d < -0.5) return "ahead";
-          return "stopped";
+          return String(dirWord(d > 0.5f ? 1 : d < -0.5f ? -1 : 0));
         },
         "/propulsion/direction/transform"
     ))
