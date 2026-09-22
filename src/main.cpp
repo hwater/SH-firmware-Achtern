@@ -70,6 +70,7 @@
 #include "sensesp/system/saveable.h"
 #include "sensesp/ui/config_item.h"
 #include "sensesp/ui/status_page_item.h"
+#include "sensesp/ui/ui_button.h"
 #include "sensesp/transforms/linear.h"
 #include "sensesp_onewire/onewire_temperature.h"
 
@@ -406,12 +407,18 @@ class ADCConfig : public FileSystemSaveable {
  public:
   float div_rudder   = ADC_CAL_RUDDER;
   float div_oilpress = ADC_CAL_OILPRESS;
+  // Nullpunkt des Ruderwinkels in Grad. Wird vom gemessenen Winkel abgezogen,
+  // korrigiert also den Versatz, nicht die Verstaerkung (das macht div_rudder).
+  // Setzbar ueber die Schaltflaeche "Ruder-Nullpunkt setzen" auf der
+  // Control-Seite oder von Hand hier in der Konfiguration.
+  float off_rudder   = 0.0f;
 
   ADCConfig() : FileSystemSaveable("/adc/config") { load(); }
 
   bool to_json(JsonObject& root) override {
     root["div_rudder"]   = div_rudder;
     root["div_oilpress"] = div_oilpress;
+    root["off_rudder"]   = off_rudder;
     return true;
   }
 
@@ -420,6 +427,8 @@ class ADCConfig : public FileSystemSaveable {
       div_rudder   = cfg["div_rudder"].as<float>();
     if (cfg["div_oilpress"].is<float>())
       div_oilpress = cfg["div_oilpress"].as<float>();
+    if (cfg["off_rudder"].is<float>())
+      off_rudder   = cfg["off_rudder"].as<float>();
     return true;
   }
 };
@@ -429,7 +438,9 @@ inline const String ConfigSchema(const ADCConfig&) {
     "div_rudder":{"title":"Ruder Teiler-Faktor","type":"number",
       "description":"(R1+R2)/R2 des Spannungsteilers, empirisch kalibriert (Standard: 4.74)"},
     "div_oilpress":{"title":"Öldruck Teiler-Faktor","type":"number",
-      "description":"(R1+R2)/R2 des Spannungsteilers, empirisch kalibriert (Standard: 4.64)"}
+      "description":"(R1+R2)/R2 des Spannungsteilers, empirisch kalibriert (Standard: 4.64)"},
+    "off_rudder":{"title":"Ruder Nullpunkt (Grad)","type":"number",
+      "description":"Wird vom gemessenen Ruderwinkel abgezogen. Bequemer über die Schaltfläche 'Ruder-Nullpunkt setzen' auf der Control-Seite — Ruder dabei mittschiffs!"}
   }})###";
 }
 
@@ -525,7 +536,8 @@ float mapf(float x, float i0, float i1, float o0, float o1) {
 void readADC() {
   sd.rudderVolt  = readADC_V(ADC_RUDDER_PIN,   g_adc_cfg->div_rudder);
   sd.rudderAngle = mapf(sd.rudderVolt,  RUDDER_V_MIN, RUDDER_V_MAX,
-                        RUDDER_DEG_MIN, RUDDER_DEG_MAX);
+                        RUDDER_DEG_MIN, RUDDER_DEG_MAX)
+                   - g_adc_cfg->off_rudder;
   sd.oilVolt     = readADC_V(ADC_OILPRESS_PIN, g_adc_cfg->div_oilpress);
   sd.oilPressure = mapf(sd.oilVolt, OIL_V_MIN, OIL_V_MAX,
                         OIL_PA_MIN, OIL_PA_MAX);
@@ -1204,6 +1216,33 @@ void setup() {
   // landet mDNS sonst auf "esp32-<MAC>". Hier den richtigen Namen vorgeben,
   // bevor der Event-Loop die OTA-Initialisierung anstoesst.
   ArduinoOTA.setHostname(SensESPBaseApp::get_hostname().c_str());
+
+  // ── Schaltflaeche auf der Control-Seite (SensESP 3.6.0) ─────────────────
+  //
+  // "Ruder-Nullpunkt setzen": uebernimmt den gerade gemessenen Ruderwinkel
+  // als Null. Der Versatz landet in ADCConfig.off_rudder und wird beim Messen
+  // abgezogen; div_rudder (Verstaerkung) bleibt unberuehrt.
+  //
+  // MIT Rueckfrage, und das ist kein Formalismus: Gedrueckt, waehrend das
+  // Ruder nicht mittschiffs steht, verstellt sie die Referenz und die Anzeige
+  // stimmt danach nicht mehr. Der alte Wert wird deshalb vorher ins Log
+  // geschrieben -- damit laesst er sich von Hand wieder eintragen.
+  UIButton::add("ruder_null", "Ruder-Nullpunkt setzen (Ruder mittschiffs!)",
+                true)
+      ->attach([]() {
+        if (!g_adc_cfg) return;
+        const float alt_off = g_adc_cfg->off_rudder;
+        // sd.rudderAngle ist bereits um den alten Versatz bereinigt, der
+        // Rohwinkel ist also Anzeige + alter Versatz.
+        const float roh = sd.rudderAngle + alt_off;
+        g_adc_cfg->off_rudder = roh;
+        g_adc_cfg->save();
+        ESP_LOGW("Ruder",
+                 "Nullpunkt neu gesetzt: %.2f -> %.2f Grad "
+                 "(Rohwinkel %.2f). Alten Wert bei Bedarf von Hand "
+                 "zuruecksetzen.",
+                 alt_off, g_adc_cfg->off_rudder, roh);
+      });
 
   // ── NMEA2000 Adresse von MAC ableiten ────────────────────
   uint8_t mac[6];
