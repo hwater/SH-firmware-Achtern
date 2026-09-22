@@ -7,13 +7,10 @@ library re-installs/updates.
 Injects a "Dash" link into /api/routes so the SensESP web-UI navbar shows a
 Dash entry pointing at our custom /dash dashboard.
 
---- Patch 2 (base_command_handler.cpp): Case-insensitive origin check ---
-SensESP 3.3 guards POST /api/device/restart (and reset) with a cross-origin
-check that compares the Origin header to the stored hostname using
-String::indexOf, which is case-sensitive.  If the browser accesses the device
-via the AP whose SSID is uppercase (e.g. http://ACHTERNSENSORIK.local) while
-the stored hostname is lowercase ("achternsensorik"), the check fails with 403
-Forbidden.  Fix: copy origin and hostname to lowercase before comparing.
+--- Patch 2: entfallen ---
+Der fruehere Patch fuer den case-sensitiven Origin-Check wird seit
+SensESP 3.6.0 nicht mehr gebraucht; die Pruefung ist dort upstream
+case-insensitiv. Siehe die Notiz weiter unten.
 
 --- Patch 3 (wifi_provisioner.cpp): Normalize AP SSID to lowercase ---
 SensESP derives the AP SSID from get_hostname() at startup, but then
@@ -105,28 +102,27 @@ _NAVBAR_REPLACEMENT = _NAVBAR_ANCHOR + (
 )
 
 # ---------------------------------------------------------------------------
-# Patch 2 – Case-insensitive origin check  (base_command_handler.cpp)
-# Arduino String::indexOf is case-sensitive; toLowerCase() is void/in-place,
-# so we copy to lowercase temporaries before comparing.
+# Patch 2 – Case-insensitive origin check: ENTFALLEN seit SensESP 3.6.0
+#
+# Bis SensESP 3.4.x verglich check_origin() den Origin-Header per
+# String::indexOf gegen den gespeicherten Hostnamen -- case-sensitiv. Der
+# Zugriff ueber den Grossbuchstaben-AP (http://ACHTERNSENSORIK.local) lief
+# deshalb in ein 403. Dieser Patch hat das umgangen.
+#
+# SensESP 3.6.0 hat die Pruefung neu geschrieben: is_own_host() vergleicht
+# jetzt mit host.equalsIgnoreCase(hostname + ".local") und zusaetzlich wird
+# Origin gegen Host geprueft (CSRF) sowie Host gegen die eigenen Adressen
+# (DNS-Rebinding). Der Patch ist damit gegenstandslos -- sein Anker existiert
+# nicht mehr, das Skript warnte nur noch ueber ein geloestes Problem.
+#
+# Entfernt am 2026-09-22 beim Update 3.4.0 -> 3.6.0. Patch 3 (AP-SSID in
+# Kleinbuchstaben) bleibt: er haelt SSID und mDNS-Namen konsistent und ist
+# davon unabhaengig.
 # ---------------------------------------------------------------------------
-_ORIGIN_ANCHOR = (
-    "    String hostname = SensESPBaseApp::get_hostname();\n"
-    "    if (origin_str.indexOf(hostname) < 0) {\n"
-)
-_ORIGIN_REPLACEMENT = (
-    "    String hostname = SensESPBaseApp::get_hostname();\n"
-    "    // [achtern02] Case-insensitive origin check: Arduino String::indexOf is\n"
-    "    // case-sensitive, so 'ACHTERNSENSORIK.local' would not match hostname\n"
-    "    // 'achternsensorik'. toLowerCase() is void/in-place, so copy first.\n"
-    "    String _origin_lc = origin_str; _origin_lc.toLowerCase();\n"
-    "    String _host_lc = hostname;     _host_lc.toLowerCase();\n"
-    "    if (_origin_lc.indexOf(_host_lc) < 0) {\n"
-)
 
 _BASE_CMD_FILE = "SensESP/src/sensesp/net/web/base_command_handler.cpp"
 _BASE_CMD_PATCHES = [
     ("[achtern02] Extra navbar entry",        _NAVBAR_ANCHOR,  _NAVBAR_REPLACEMENT),
-    ("[achtern02] Case-insensitive origin",   _ORIGIN_ANCHOR,  _ORIGIN_REPLACEMENT),
 ]
 
 # ---------------------------------------------------------------------------
