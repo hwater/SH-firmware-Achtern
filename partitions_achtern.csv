@@ -1,6 +1,26 @@
-# Name,   Type, SubType, Offset,   Size,     Flags
-nvs,      data, nvs,     0x9000,   0x5000,
-otadata,  data, ota,     0xe000,   0x2000,
-app0,     app,  ota_0,   0x10000,  0x1A0000,
-app1,     app,  ota_1,   0x1B0000, 0x1A0000,
-spiffs,   data, spiffs,  0x350000, 0xB0000,
+# Partitionstabelle AchternSensorik — 4 MB Flash
+#
+# Stand 2026-09-22: App von 0x1A0000 auf 0x1D0000 vergroessert (+192 KB je
+# Slot). Anlass: nach dem SensESP-Update auf 3.6.0 lag der Build bei 95,0 %
+# der alten App-Partition, es blieben 84 KB.
+#
+# Gegenfinanziert aus SPIFFS: dort lagen 704 KB, belegt sind rund 12 KB
+# Konfiguration in 20 Dateien. 256 KB bleiben als reichliche Reserve.
+# Neu dazu die coredump-Partition — nach den ungeklaerten Ausfaellen im
+# August ist ein Absturzabbild mehr wert als ungenutzter Dateispeicher.
+#
+# ACHTUNG: Ein Wechsel der Partitionstabelle verschiebt SPIFFS
+# (0x350000 -> 0x3B0000). Die gespeicherte Konfiguration ist danach WEG und
+# muss zurueckgespielt werden — Sicherung liegt auf dem Pi unter
+# ~/backups/esp-config/. Nicht per OTA flashbar, das braucht das Kabel.
+#
+# App-Partitionen muessen an 64-KB-Grenzen liegen; die Offsets unten sind
+# entsprechend ausgerichtet und fuellen die 4 MB exakt aus.
+#
+# Name,   Type, SubType,  Offset,   Size,     Flags
+nvs,      data, nvs,      0x9000,   0x5000,
+otadata,  data, ota,      0xe000,   0x2000,
+app0,     app,  ota_0,    0x10000,  0x1D0000,
+app1,     app,  ota_1,    0x1E0000, 0x1D0000,
+spiffs,   data, spiffs,   0x3B0000, 0x40000,
+coredump, data, coredump, 0x3F0000, 0x10000,
