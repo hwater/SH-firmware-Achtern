@@ -24,7 +24,7 @@
  *    propulsion.0.coolantTemperature   [K]
  *    propulsion.0.exhaustTemperature   [K]   ← DS18B20 T3
  *    steering.rudderAngle              [rad]
- *    environment.inside.engineRoom.airSensorTemp    [K]   ← BME680 (Sensor-Lufttemperatur)
+ *    environment.inside.engineRoom.airSensorTemp    [K]   ← BME680 (Sensor-SensorTemperatur)
  *    environment.inside.engineRoom.relativeHumidity  [0-1] ← BME680
  *    environment.inside.engineRoom.gasResistance     [Ω]   ← BME680 (Luftgüte/Gas)
  *    environment.inside.wellenlager.temperature [K]  ← DS18B20 T2 (Wellenlager)
@@ -220,7 +220,8 @@ struct SensorData {
   bool    shaftValid = false;
   float   temp[4]    = {NAN, NAN, NAN, NAN};
   int     tempCount  = 0;
-  float   airTemp    = NAN;
+  float   airTempRaw = NAN;    // BME680-Rohtemperatur (vor Offset-Kalibrierung)
+  float   airTemp    = NAN;    // kalibriert (Rohwert + Offset), für Dash/OLED/SK
   float   humidity   = NAN;
   float   pressure   = NAN;    // hPa
   float   gasRes     = NAN;    // kΩ
@@ -553,7 +554,7 @@ void readADC() {
 void readBME680() {
   if (!sd.bmeOk) return;
   if (bme.performReading()) {
-    sd.airTemp  = bme.temperature;
+    sd.airTempRaw = bme.temperature;   // kalibriert wird in der SK-Pipeline (Linear-Offset)
     sd.humidity = bme.humidity;
     sd.pressure = bme.pressure / 100.0f;
     sd.gasRes   = bme.gas_resistance / 1000.0f;
@@ -676,7 +677,7 @@ void displayPage2_Engine() {
   display.print(sd.rudderAngle, 1); display.print(F(" Grad"));
   display.setCursor(0,38);
   if (!isnan(sd.airTemp)) {
-    display.print(F("Luft: "));
+    display.print(F("Sensor: "));
     display.print(sd.airTemp, 1); display.print(F("C "));
     display.print((int)sd.humidity); display.print(F("%"));
   }
@@ -715,7 +716,7 @@ void printSerial() {
   Serial.printf(
     "RPM=%.1f  Dir=%s  Glitch=%lu  Rej=%lu  Spike=%lu  Ruder=%.1f°  Oel=%.2fbar "
     "T0=%.1f T1=%.1f T2=%.1f T3=%.1f  "
-    "Luft=%.1f°C  Up=%lus\n",
+    "Sensor=%.1f°C  Up=%lus\n",
     sd.rpm, d, (unsigned long)pulseGlitches, (unsigned long)rpmRejected,
     (unsigned long)rpmSpikes,
     sd.rudderAngle, sd.oilPressure/100000.0f,
@@ -1003,7 +1004,7 @@ header h1{font-size:18px;margin:0;letter-spacing:.04em}#conn{font-size:13px;colo
 <div class="row"><span class="l" id="t2l">T2</span><span class="v" id="t2">--</span></div>
 <div class="row"><span class="l" id="t3l">T3</span><span class="v" id="t3">--</span></div></div>
 <div class="card"><h2>Umgebung</h2>
-<div class="row"><span class="l">Lufttemperatur</span><span class="v" id="at">--</span></div>
+<div class="row"><span class="l">SensorTemperatur</span><span class="v" id="at">--</span></div>
 <div class="row"><span class="l">Luftfeuchte</span><span class="v" id="hum">--</span></div>
 <div class="row"><span class="l">Luftdruck</span><span class="v" id="pres">--</span></div>
 <div class="row"><span class="l">Gas-Widerstand</span><span class="v" id="gas">--</span></div></div>
@@ -1281,7 +1282,7 @@ void setup() {
     ->set_description(
       "Spannungsteiler-Faktoren fuer Ruder- und Oeldruck-Geber.<br>"
       "Formel: V_in = V_adc &times; Faktor")
-    ->set_sort_order(300);
+    ->set_sort_order(500);   // Gruppe: Analog (Ruder/Oeldruck)
   readADC();   // erste Messung mit geladenen Werten
 
   // ── Temperatursensor-Konfiguration (Namen + Offsets) ─────
@@ -1291,7 +1292,7 @@ void setup() {
     ->set_description(
       "Anzeigenamen und Offset-Korrektur fuer die 4 DS18B20-Sensoren.<br>"
       "Reihenfolge ergibt sich aus dem 1-Wire Bus.")
-    ->set_sort_order(310);
+    ->set_sort_order(340);   // direkt nach den 4 DS18B20-Bloecken (300..332)
 
   // ── AP-Konfiguration (Auto-Abschaltung) ──────────────────
   g_ap_cfg = std::make_shared<APConfig>();
@@ -1337,7 +1338,7 @@ void setup() {
   auto* st_t1     = new StatusPageItem<String>(g_temp_cfg->names[1], "--", "Sensoren", 55);
   auto* st_t2     = new StatusPageItem<String>(g_temp_cfg->names[2], "--", "Sensoren", 60);
   auto* st_t3     = new StatusPageItem<String>(g_temp_cfg->names[3], "--", "Sensoren", 65);
-  auto* st_air    = new StatusPageItem<String>("Lufttemperatur", "--", "Sensoren", 70);
+  auto* st_air    = new StatusPageItem<String>("SensorTemperatur", "--", "Sensoren", 70);
   auto* st_hum    = new StatusPageItem<String>("Luftfeuchte",    "--", "Sensoren", 75);
   auto* st_pres   = new StatusPageItem<String>("Luftdruck",      "--", "Sensoren", 80);
   auto* st_gas    = new StatusPageItem<String>("Gas-Widerstand", "--", "Sensoren", 85);
@@ -1461,21 +1462,40 @@ void setup() {
   addTemp("/Temp/Maschinenraum", "Maschinenraum Temperatur", "environment.inside.wellenlager.temperature", 320, 2);
   addTemp("/Temp/Abgas",         "Abgas Temperatur",         "propulsion.0.exhaustTemperature",           330, 3);
 
-  // ── BME680: Motorraum-Lufttemperatur (K) ─────────────────
-  // Umgezogen von environment.outside.* → engineRoom (Mast liefert jetzt Außenluft).
-  // Config-Key mitgeändert (/engineRoom/…), sonst überschreibt gespeicherte Config den Pfad.
+  // ── BME680 Motorraum-Sensor (web-konfigurierbar) ─────────────────────────
+  // Alle drei Ausgaben sind in der Configuration konfigurierbar (SK-Pfad); die
+  // SensorTemperatur zusätzlich mit Linear-Offset — der BME680 misst durch
+  // Eigenerwärmung typisch 1–3 °C zu hoch. Der Offset wirkt auf den Rohwert
+  // (sd.airTempRaw) und wird als sd.airTemp (°C) für Dash/OLED/NMEA2000
+  // gespiegelt, damit alle Anzeigen UND der SK-Wert konsistent kalibriert sind.
   auto* airTempSensor = new RepeatSensor<float>(INTERVAL_BME_MS, []() -> float {
-    return isnan(sd.airTemp) ? NAN : sd.airTemp + 273.15f;
+    return isnan(sd.airTempRaw) ? NAN : sd.airTempRaw + 273.15f;   // roh in K
   });
-  airTempSensor->connect_to(new SKOutput<float>(
-      "environment.inside.engineRoom.airSensorTemp", "/engineRoom/airSensorTemp"));
+  auto* airCal = new Linear(1.0, 0.0, "/BME680/SensorTemp/offset");
+  ConfigItem(airCal)->set_title("SensorTemperatur Kalibrierung")
+      ->set_description("Linear-Kalibrierung (Faktor/Offset in K) der BME680-Sensortemperatur. "
+                        "Offset z.B. -2 gegen die Sensor-Eigenerwärmung.")
+      ->set_sort_order(400);
+  auto* airSk = new SKOutputFloat("environment.inside.engineRoom.airSensorTemp",
+                                  "/BME680/SensorTemp/skPath");
+  ConfigItem(airSk)->set_title("SensorTemperatur Signal K Pfad")
+      ->set_description("Signal K Pfad der BME680-Sensortemperatur (K)")
+      ->set_sort_order(401);
+  airTempSensor->connect_to(airCal);
+  airCal->connect_to(airSk);
+  airCal->connect_to(new LambdaConsumer<float>(
+      [](float kelvin) { sd.airTemp = kelvin - 273.15f; }));   // kalibriert für Dash/OLED
 
   // ── BME680: Motorraum-Luftfeuchtigkeit (0.0–1.0) ─────────
   auto* humSensor = new RepeatSensor<float>(INTERVAL_BME_MS, []() -> float {
     return isnan(sd.humidity) ? NAN : sd.humidity / 100.0f;
   });
-  humSensor->connect_to(new SKOutput<float>(
-      "environment.inside.engineRoom.relativeHumidity", "/engineRoom/humidity"));
+  auto* humSk = new SKOutputFloat("environment.inside.engineRoom.relativeHumidity",
+                                  "/BME680/Humidity/skPath");
+  ConfigItem(humSk)->set_title("Luftfeuchte Signal K Pfad")
+      ->set_description("Signal K Pfad der BME680-Luftfeuchtigkeit (0–1)")
+      ->set_sort_order(410);
+  humSensor->connect_to(humSk);
 
   // ── BME680: Luftdruck — ENTFÄLLT ─────────────────────────
   // Der Pi hat einen eigenen Baro-Chip (OpenPlotter.I2C.BME280) → der liefert
@@ -1486,8 +1506,12 @@ void setup() {
   auto* gasSensor = new RepeatSensor<float>(INTERVAL_BME_MS, []() -> float {
     return isnan(sd.gasRes) ? NAN : sd.gasRes * 1000.0f;  // kΩ → Ω
   });
-  gasSensor->connect_to(new SKOutput<float>(
-      "environment.inside.engineRoom.gasResistance", "/engineRoom/gasResistance"));
+  auto* gasSk = new SKOutputFloat("environment.inside.engineRoom.gasResistance",
+                                  "/BME680/Gas/skPath");
+  ConfigItem(gasSk)->set_title("Gas-Widerstand Signal K Pfad")
+      ->set_description("Signal K Pfad des BME680-Gas-Widerstands (Ω, Luftgüte)")
+      ->set_sort_order(420);
+  gasSensor->connect_to(gasSk);
 
   // ════════════════════════════════════════════════════════
   //  EVENT-LOOP TIMER (periodische Hintergrundaufgaben)
