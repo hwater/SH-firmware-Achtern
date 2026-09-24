@@ -24,10 +24,10 @@
  *    propulsion.0.coolantTemperature   [K]
  *    propulsion.0.exhaustTemperature   [K]   ← DS18B20 T3
  *    steering.rudderAngle              [rad]
- *    environment.inside.engineRoom.airTemperature   [K]   ← BME680 (Motorraum-Luft)
+ *    environment.inside.engineRoom.airSensorTemp    [K]   ← BME680 (Sensor-Lufttemperatur)
  *    environment.inside.engineRoom.relativeHumidity  [0-1] ← BME680
  *    environment.inside.engineRoom.gasResistance     [Ω]   ← BME680 (Luftgüte/Gas)
- *    environment.inside.engineRoom.temperature [K]  ← DS18B20 T2
+ *    environment.inside.wellenlager.temperature [K]  ← DS18B20 T2 (Wellenlager)
  *    (Außenluft/Barometer liefert jetzt der Mast-Kompass, nicht mehr achtern)
  *
  *  WiFi AP (SensESP Konfig-Portal):
@@ -1458,7 +1458,7 @@ void setup() {
   };
   addTemp("/Temp/Kuehlwasser",   "Kuehlwasser Temperatur",   "propulsion.0.coolantTemperature",           300, 0);
   addTemp("/Temp/Oel",           "Oel Temperatur",           "propulsion.0.oilTemperature",               310, 1);
-  addTemp("/Temp/Maschinenraum", "Maschinenraum Temperatur", "environment.inside.engineRoom.temperature", 320, 2);
+  addTemp("/Temp/Maschinenraum", "Maschinenraum Temperatur", "environment.inside.wellenlager.temperature", 320, 2);
   addTemp("/Temp/Abgas",         "Abgas Temperatur",         "propulsion.0.exhaustTemperature",           330, 3);
 
   // ── BME680: Motorraum-Lufttemperatur (K) ─────────────────
@@ -1468,7 +1468,7 @@ void setup() {
     return isnan(sd.airTemp) ? NAN : sd.airTemp + 273.15f;
   });
   airTempSensor->connect_to(new SKOutput<float>(
-      "environment.inside.engineRoom.airTemperature", "/engineRoom/airTemp"));
+      "environment.inside.engineRoom.airSensorTemp", "/engineRoom/airSensorTemp"));
 
   // ── BME680: Motorraum-Luftfeuchtigkeit (0.0–1.0) ─────────
   auto* humSensor = new RepeatSensor<float>(INTERVAL_BME_MS, []() -> float {
