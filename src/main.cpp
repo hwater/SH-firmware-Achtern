@@ -1476,8 +1476,12 @@ void setup() {
       ->set_description("Linear-Kalibrierung (Faktor/Offset in K) der BME680-Sensortemperatur. "
                         "Offset z.B. -2 gegen die Sensor-Eigenerwärmung.")
       ->set_sort_order(400);
+  // Kein Standard-SK-Pfad (endet nicht auf ".temperature") -> ohne explizite
+  // Metadaten kennt der SK-Server weder Einheit noch Anzeigetyp und zeigt den
+  // Rohwert (Kelvin) statt einer Temperatur an.
   auto* airSk = new SKOutputFloat("environment.inside.engineRoom.airSensorTemp",
-                                  "/BME680/SensorTemp/skPath");
+                                  "/BME680/SensorTemp/skPath",
+                                  new SKMetadata("K", "Motorraum Sensortemperatur"));
   ConfigItem(airSk)->set_title("SensorTemperatur Signal K Pfad")
       ->set_description("Signal K Pfad der BME680-Sensortemperatur (K)")
       ->set_sort_order(401);
