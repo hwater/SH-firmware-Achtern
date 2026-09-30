@@ -39,6 +39,16 @@ Most recent first.
   `N2kDoubleNA` and the Perkins monitor is the sole authority for engine hours.
   Note both boards still send **PGN 127488** (RPM) on instance 0.
 
+## Signal K
+- **Registers under its hostname, not a random UUID** (2026‑09‑30): SensESP
+  picks a UUID as Signal K `clientId` on its first access request, so the
+  device showed up in *Security → Devices* as e.g.
+  `eeac5ae3-6bf3-4acd-b33e-6fa4cb241e40`. The `clientId` is now pinned to
+  its hostname (e.g. `AchternS`) (`src/sk_client_id.h`). On the first boot with this firmware the
+  old token is dropped and a new access request goes out — **approve it once
+  in the Signal K admin**, then delete the stale UUID entry. Source
+  priorities are keyed on `$source`, not on the `clientId`, and stay valid.
+
 ## Stability
 - **WiFi watchdog recovers from router outages** (v2.01): after a router
   outage on 2026‑07‑21 the WiFi stack hung for 21 h until a manual power
