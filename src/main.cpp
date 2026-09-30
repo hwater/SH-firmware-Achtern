@@ -61,6 +61,7 @@
 // ════════════════════════════════════════════════════════════
 #include "sensesp_app_builder.h"
 #include "ws_reboot_watchdog.h"
+#include "sk_client_id.h"
 #include "sensesp/sensors/sensor.h"
 #include "sensesp/signalk/signalk_output.h"
 #include "sensesp/transforms/lambda_transform.h"
@@ -1217,6 +1218,10 @@ void setup() {
   // landet mDNS sonst auf "esp32-<MAC>". Hier den richtigen Namen vorgeben,
   // bevor der Event-Loop die OTA-Initialisierung anstoesst.
   ArduinoOTA.setHostname(SensESPBaseApp::get_hostname().c_str());
+
+  // In Signal K unter dem Hostnamen statt einer UUID auftreten.
+  // Siehe sk_client_id.h.
+  pin_sk_client_id_to_hostname();
 
   // ── Schaltflaeche auf der Control-Seite (SensESP 3.6.0) ─────────────────
   //
