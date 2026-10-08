@@ -128,14 +128,20 @@ using namespace sensesp::onewire;
 #define OIL_PA_MAX   1000000.0f
 
 // ── Sensor-Intervalle [ms] ───────────────────────────────
-#define INTERVAL_RPM_MS     500
+// Sende-/Rechentakt der Drehzahl. 250 ms statt 500: das Bordbedienfeld zeigt
+// die Welle sonst ruckelig, und an diesem Takt haengt auch der N2K-Versand.
+#define INTERVAL_RPM_MS     250
 #define INTERVAL_TEMP_MS   2000
 #define INTERVAL_BME_MS    3000
 #define INTERVAL_ADC_MS     200
 #define INTERVAL_SERIAL_MS 1000
 #define INTERVAL_OLED_MS    500
 #define INTERVAL_N2K_MS      10
-#define RPM_TIMEOUT_MS     3000
+// So lange ohne Impuls gilt die Welle als stehend. Bei 3 Magneten je
+// Umdrehung heisst 1200 ms: alles unter rund 15 1/min zaehlt als Stillstand —
+// die Welle schleppt bei Fahrt deutlich schneller. Vorher 3000 ms, da stand
+// die Anzeige nach dem Auskuppeln drei Sekunden lang auf der alten Drehzahl.
+#define RPM_TIMEOUT_MS     1200
 
 // ── OLED ─────────────────────────────────────────────────
 #define SCREEN_WIDTH    128
