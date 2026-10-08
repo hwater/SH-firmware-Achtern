@@ -17,8 +17,8 @@
  *    → Serial 115200 Bd, alle 1 s
  *
  *  Signal K Pfade (SI-Einheiten!):
- *    propulsion.0.revolutions          [Hz]  = RPM / 60
- *    propulsion.0.state                [str] "ahead|astern|stopped"
+ *    propulsion.1.revolutions          [Hz]  = RPM / 60   ← Welle, Instanz 1
+ *    propulsion.1.state                [str] "ahead|astern|stopped"
  *    propulsion.0.oilPressure          [Pa]
  *    propulsion.0.oilTemperature       [K]
  *    propulsion.0.coolantTemperature   [K]
@@ -1386,7 +1386,10 @@ void setup() {
   //                  → LambdaConsumer (Nebenwirkungen)
   // ════════════════════════════════════════════════════════
 
-  // ── RPM → Signal K (propulsion.0.revolutions in Hz) ─────
+  // ── RPM → Signal K (propulsion.1.revolutions in Hz) ─────
+  // Instanz 1 ist die Welle — wie schon bei N2K (N2K_ENGINE_INST). Instanz 0
+  // gehoert dem Perkins-Motor; die SK-Pfade lagen dort nur historisch mit
+  // drin und haben die Welle als Motordrehzahl erscheinen lassen.
   auto* rpmSensor = new RepeatSensor<float>(INTERVAL_RPM_MS, []() -> float {
     calcRPMandDirection();   // aktualisiert sd.rpm + sd.direction
     return sd.rpm;
@@ -1398,7 +1401,7 @@ void setup() {
         "/propulsion/rpm/hz_transform"
     ))
     ->connect_to(new SKOutput<float>(
-        "propulsion.0.revolutions",
+        "propulsion.1.revolutions",
         "/propulsion/revolutions"
     ));
 
@@ -1407,7 +1410,7 @@ void setup() {
     sendNMEA2000();
   }));
 
-  // ── Drehrichtung → Signal K (propulsion.0.state) ─────────
+  // ── Drehrichtung → Signal K (propulsion.1.state) ─────────
   auto* dirSensor = new RepeatSensor<float>(INTERVAL_RPM_MS, []() -> float {
     return (float)sd.direction;   // sd.direction wurde bei rpm bereits gesetzt
   });
@@ -1420,7 +1423,7 @@ void setup() {
         "/propulsion/direction/transform"
     ))
     ->connect_to(new SKOutput<String>(
-        "propulsion.0.state",
+        "propulsion.1.state",
         "/propulsion/state"
     ));
 
