@@ -60,6 +60,7 @@
 //  SENSESP – Framework Includes
 // ════════════════════════════════════════════════════════════
 #include "sensesp_app_builder.h"
+#include "heap_watchdog.h"
 #include "ws_reboot_watchdog.h"
 #include "sk_client_id.h"
 #include "sensesp/sensors/sensor.h"
@@ -1209,6 +1210,20 @@ void setup() {
   // Neustart, wenn der Signal-K-WebSocket dauerhaft tot bleibt — auch dann,
   // wenn der WLAN-Stack "verbunden" behauptet. Siehe ws_reboot_watchdog.h.
   start_ws_reboot_watchdog();
+  // Netz unter dem WS-Wachhund: ist der Heap zerstueckelt, bekommt der
+  // WebSocket-Client keinen Puffer mehr und bleibt tot, ohne dass etwas nach
+  // Fehler aussieht. Siehe heap_watchdog.h. Die Wellendrehzahl geht als
+  // Zeiger mit, damit unter Fahrt nicht neu gestartet wird - an diesem Geraet
+  // haengt auch die Motorraum-Gasueberwachung.
+  start_heap_watchdog(&sd.rpm);
+
+  // Den freien Heap mitschreiben, sonst bleibt jedes Speicherproblem eine
+  // Vermutung. Alle 30 s reicht - ein Leck zeigt sich ueber Tage.
+  auto* heap_sensor = new RepeatSensor<float>(30000, []() -> float {
+    return (float)ESP.getFreeHeap();
+  });
+  heap_sensor->connect_to(new SKOutputFloat(
+      "diagnostics.achtern.freeHeap", "/diagnostics/achtern/freeHeap"));
 
   // Erstboot-Default: nur setzen, wenn noch der SensESP-Default ("SensESP")
   // greift – dann wird unser Wunsch-Default einmalig persistiert.
@@ -1340,6 +1355,24 @@ void setup() {
   g_st_can_recov = new StatusPageItem<uint32_t>("Recoveries", 0,           "Canbus", 160);
 
   // ── Sensor-Werte auf der Status-Seite (Gruppe "Sensoren") ──
+
+  // Eine Statuszeile nur setzen, wenn sich ihr Text wirklich geaendert hat.
+  // set() legt intern ein String-Objekt an; bei fuenfzehn Zeilen im
+  // Sekundentakt waren das rund 1,3 Millionen kurze Allokationen am Tag. Der
+  // ESP32 kompaktiert seinen Heap nicht - er zerstueckelt, bis kein
+  // zusammenhaengender WebSocket-Puffer mehr hineinpasst. Genau daran ist die
+  // Signal-K-Verbindung des Perkins am 02.11.2026 erstickt; dieses Geraet hat
+  // dasselbe Muster, und an ihm haengt die Motorraum-Gasueberwachung.
+#define SETZE(item, wert)                                   \
+  do {                                                      \
+    static char _letzter[28] = "";                          \
+    const char* _neu = (wert);                              \
+    if (strncmp(_letzter, _neu, sizeof(_letzter)) != 0) {    \
+      strncpy(_letzter, _neu, sizeof(_letzter) - 1);        \
+      _letzter[sizeof(_letzter) - 1] = '\0';                \
+      (item)->set(_neu);                                    \
+    }                                                       \
+  } while (0)
   auto* st_rpm    = new StatusPageItem<String>("Drehzahl",  "--", "Sensoren", 10);
   auto* st_dir    = new StatusPageItem<String>("Richtung",  "--", "Sensoren", 20);
   auto* st_rudder = new StatusPageItem<String>("Ruder",     "--", "Sensoren", 30);
@@ -1353,34 +1386,43 @@ void setup() {
   auto* st_pres   = new StatusPageItem<String>("Luftdruck",      "--", "Sensoren", 80);
   auto* st_gas    = new StatusPageItem<String>("Gas-Widerstand", "--", "Sensoren", 85);
 
-  event_loop()->onRepeat(1000, [st_rpm, st_dir, st_rudder, st_oil, st_t0, st_t1,
+  event_loop()->onRepeat(5000, [st_rpm, st_dir, st_rudder, st_oil, st_t0, st_t1,
                                 st_t2, st_t3, st_air, st_hum, st_pres, st_gas]() {
     char v[28];
     snprintf(v, sizeof(v), "%.0f RPM", sd.rpm);
-    st_rpm->set(v);
-    st_dir->set(sd.direction > 0 ? "Vorwärts"
+    SETZE(st_rpm, v);
+    SETZE(st_dir, sd.direction > 0 ? "Vorwärts"
               : sd.direction < 0 ? "Rückwärts" : "Stillstand");
     snprintf(v, sizeof(v), "%+.1f °", sd.rudderAngle);
-    st_rudder->set(v);
+    SETZE(st_rudder, v);
     snprintf(v, sizeof(v), "%.2f bar", sd.oilPressure / 100000.0f);
-    st_oil->set(v);
+    SETZE(st_oil, v);
     StatusPageItem<String>* ts[4] = {st_t0, st_t1, st_t2, st_t3};
+    // Je Fuehler ein eigener Vergleichspuffer. Das SETZE-Makro unten taugt
+    // hier NICHT: sein static liegt an der Code-Stelle, nicht je Durchlauf -
+    // die vier Fuehler wuerden sich gegenseitig den Vergleichswert
+    // ueberschreiben und dauernd neu setzen.
+    static char letzte_temp[4][28] = {{0}, {0}, {0}, {0}};
     for (int i = 0; i < 4; i++) {
       if (isnan(sd.temp[i])) {
-        ts[i]->set("--");
+        snprintf(v, sizeof(v), "--");
       } else {
         snprintf(v, sizeof(v), "%.1f °C", sd.temp[i]);
+      }
+      if (strncmp(letzte_temp[i], v, sizeof(letzte_temp[i])) != 0) {
+        strncpy(letzte_temp[i], v, sizeof(letzte_temp[i]) - 1);
+        letzte_temp[i][sizeof(letzte_temp[i]) - 1] = '\0';
         ts[i]->set(v);
       }
     }
-    if (isnan(sd.airTemp)) st_air->set("--");
-    else { snprintf(v, sizeof(v), "%.1f °C", sd.airTemp); st_air->set(v); }
-    if (isnan(sd.humidity)) st_hum->set("--");
-    else { snprintf(v, sizeof(v), "%.0f %%", sd.humidity); st_hum->set(v); }
-    if (isnan(sd.pressure)) st_pres->set("--");
-    else { snprintf(v, sizeof(v), "%.0f hPa", sd.pressure); st_pres->set(v); }
-    if (isnan(sd.gasRes)) st_gas->set("--");
-    else { snprintf(v, sizeof(v), "%.0f kOhm", sd.gasRes); st_gas->set(v); }
+    if (isnan(sd.airTemp)) SETZE(st_air, "--");
+    else { snprintf(v, sizeof(v), "%.1f °C", sd.airTemp); SETZE(st_air, v); }
+    if (isnan(sd.humidity)) SETZE(st_hum, "--");
+    else { snprintf(v, sizeof(v), "%.0f %%", sd.humidity); SETZE(st_hum, v); }
+    if (isnan(sd.pressure)) SETZE(st_pres, "--");
+    else { snprintf(v, sizeof(v), "%.0f hPa", sd.pressure); SETZE(st_pres, v); }
+    if (isnan(sd.gasRes)) SETZE(st_gas, "--");
+    else { snprintf(v, sizeof(v), "%.0f kOhm", sd.gasRes); SETZE(st_gas, v); }
   });
 
   // ── OTA Passwort (SensESP-Wrapper) ───────────────────────
