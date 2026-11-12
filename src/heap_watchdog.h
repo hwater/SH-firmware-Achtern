@@ -39,6 +39,8 @@
 #include "sensesp/system/lambda_consumer.h"
 #include "sensesp_app.h"
 
+#include "reboot_reason.h"
+
 // Darunter wird neu gestartet (bei stehendem Motor).
 #ifndef HEAP_REBOOT_BYTES
 #define HEAP_REBOOT_BYTES 18000UL
@@ -93,6 +95,7 @@ inline void start_heap_watchdog(const volatile float* rpm_quelle = nullptr) {
       return;
     }
 
+    set_reboot_grund(REBOOT_HEAP);
     Serial.printf("Heap nur noch %lu Bytes frei - geordneter Neustart\n",
                   (unsigned long)frei);
     Serial.flush();

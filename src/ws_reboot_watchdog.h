@@ -24,6 +24,8 @@
 #include "sensesp/system/lambda_consumer.h"
 #include "sensesp_app.h"
 
+#include "reboot_reason.h"
+
 // So lange ohne stehenden WebSocket -> harter Neustart. Zwei Fristen, je
 // nachdem ob seit dem Boot ueberhaupt schon einmal ein WebSocket stand:
 //
@@ -83,6 +85,7 @@ inline void start_ws_reboot_watchdog(uint32_t warm_s = WS_REBOOT_S,
     }
     const uint32_t frist_s = ever_connected ? warm_s : cold_s;
     if (millis() - ws_ok_ms > frist_s * 1000UL) {
+      set_reboot_grund(ever_connected ? REBOOT_WS_HAENGER : REBOOT_WS_NETZ_WEG);
       Serial.printf("WS seit %lu s tot (%s) — Neustart\n",
                     (unsigned long)frist_s,
                     ever_connected ? "Haenger" : "seit Boot nie verbunden");

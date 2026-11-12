@@ -62,6 +62,7 @@
 #include "sensesp_app_builder.h"
 #include "heap_watchdog.h"
 #include "ws_reboot_watchdog.h"
+#include "reboot_reason.h"
 #include "sk_client_id.h"
 #include "sensesp/sensors/sensor.h"
 #include "sensesp/signalk/signalk_output.h"
@@ -1224,6 +1225,12 @@ void setup() {
   });
   heap_sensor->connect_to(new SKOutputFloat(
       "diagnostics.achtern.freeHeap", "/diagnostics/achtern/freeHeap"));
+
+  // Warum das Geraet zuletzt neu startete, nach Signal K melden - damit
+  // "N mal neu gestartet" nicht mehr forensisch aus dem Heap-CSV geraten
+  // werden muss. Siehe reboot_reason.h.
+  start_reboot_reason_report("diagnostics.achtern.lastReset",
+                             "/diagnostics/achtern/lastReset");
 
   // Erstboot-Default: nur setzen, wenn noch der SensESP-Default ("SensESP")
   // greift – dann wird unser Wunsch-Default einmalig persistiert.
