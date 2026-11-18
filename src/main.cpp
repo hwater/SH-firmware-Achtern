@@ -139,10 +139,12 @@ using namespace sensesp::onewire;
 #define INTERVAL_SERIAL_MS 1000
 #define INTERVAL_OLED_MS    500
 #define INTERVAL_N2K_MS      10
-// So lange ohne Impuls gilt die Welle als stehend. Bei 3 Magneten je
-// Umdrehung heisst 1200 ms: alles unter rund 15 1/min zaehlt als Stillstand —
-// die Welle schleppt bei Fahrt deutlich schneller. Vorher 3000 ms, da stand
-// die Anzeige nach dem Auskuppeln drei Sekunden lang auf der alten Drehzahl.
+// So lange ohne Impuls gilt die Welle als stehend. Die 3 Magnete sitzen
+// UNGLEICH (44/77/220 mm), die laengste Luecke ist 5/7.75 = 65 % einer
+// Umdrehung. 1200 ms heisst deshalb: alles unter rund 32 1/min zaehlt als
+// Stillstand (nicht 15, wie hier frueher stand — das galt nur fuer gleich
+// verteilte Magnete). Vorher 3000 ms, da stand die Anzeige nach dem
+// Auskuppeln drei Sekunden lang auf der alten Drehzahl.
 #define RPM_TIMEOUT_MS     1200
 
 // ── OLED ─────────────────────────────────────────────────
@@ -207,6 +209,17 @@ void IRAM_ATTR hallISR() {
   uint32_t now  = micros();
   uint8_t  head = pulseBufHead;
   uint32_t prev = pulseBuf[(head + PULSE_BUF - 1) % PULSE_BUF];  // letzter Zeitstempel
+  // Neuanlauf nach Stillstand: die gespeicherten Zeitstempel stammen von VOR
+  // dem Stillstand, revSpan unten waere Minuten lang und minGap entsprechend —
+  // jeder echte Puls galt als Glitch, lastPulseMs blieb stehen und die Welle
+  // meldete nach dem Ablegen minutenlang 0 (nach 30 min am Steg gut 5 min).
+  // Deshalb: wer laenger als der Stillstands-Timeout auf sich warten liess,
+  // beginnt eine neue Messung mit leerem Puffer. millis statt micros: micros
+  // laeuft alle 71 min ueber und koennte einen langen Stillstand kurz aussehen
+  // lassen.
+  if (pulseCount > 0 && millis() - lastPulseMs > RPM_TIMEOUT_MS) {
+    pulseCount = 0;
+  }
   if (pulseCount >= PULSE_BUF) {
     uint32_t revSpan  = prev - pulseBuf[head];  // Spanne der letzten 3 Abstaende ≈ 1 Umdrehung
     uint32_t minGap   = revSpan / 20;           // 5 % einer Umdrehung
